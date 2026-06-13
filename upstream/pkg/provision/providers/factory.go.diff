@@ -1,0 +1,39 @@
+diff --git a/pkg/provision/providers/factory.go b/pkg/provision/providers/factory.go
+index 2bdcebb..64015a0 100644
+--- a/pkg/provision/providers/factory.go
++++ b/pkg/provision/providers/factory.go
+@@ -9,6 +9,7 @@ import (
+ 	"fmt"
+ 
+ 	"github.com/siderolabs/talos/pkg/provision"
++	"github.com/siderolabs/talos/pkg/provision/providers/apple"
+ 	"github.com/siderolabs/talos/pkg/provision/providers/docker"
+ )
+ 
+@@ -17,6 +18,8 @@ const (
+ 	QemuProviderName = "qemu"
+ 	// DockerProviderName is the name of the docker provider.
+ 	DockerProviderName = "docker"
++	// AppleContainerProviderName is the name of the Apple `container` provider.
++	AppleContainerProviderName = "apple-container"
+ )
+ 
+ // Factory instantiates provision provider by name.
+@@ -30,6 +33,8 @@ func Factory(ctx context.Context, name string) (provision.Provisioner, error) {
+ 		return docker.NewProvisioner(ctx)
+ 	case QemuProviderName:
+ 		return newQemu(ctx)
++	case AppleContainerProviderName:
++		return apple.NewProvisioner(ctx)
+ 	}
+ 
+ 	panic("unknown valid provisioner")
+@@ -38,7 +43,7 @@ func Factory(ctx context.Context, name string) (provision.Provisioner, error) {
+ // IsValidProvider returns an error if the passed provider doesn't exist.
+ func IsValidProvider(name string) error {
+ 	switch name {
+-	case QemuProviderName, DockerProviderName:
++	case QemuProviderName, DockerProviderName, AppleContainerProviderName:
+ 		return nil
+ 	}
+ 

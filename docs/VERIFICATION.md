@@ -134,5 +134,27 @@ observed. Empty-but-claimed verification is the exact failure this spike is buil
 - **Verdict:** G5 core lifecycle PASS. A competent, spec-conforming provider that brings up a real
   cluster with no everyday-IP bug. Remaining: BVA unit tests, the upstream cmd_apple.go mirror, CI gates.
 
+## 2026-06-13 — G5/upstream: full talosctl integration ✅ PASS (Claude-run, pending final acceptance)
+- **Ran:** integrated the provider into a real `talos` v1.13.3 checkout (`_out/talos-fork`) — copied
+  `provider/apple` to `pkg/provision/providers/apple`, added the factory case, the apple maker, the
+  clusterops options, and `cmd_apple.go`/`create_apple.go`. Built talosctl, then
+  `talosctl cluster create apple-container --memory-controlplanes 4GiB`, then `cluster destroy`.
+- **Expected:** the canonical talosctl command — not our own driver — drives the whole flow to a
+  healthy cluster, proving the merge is mechanical and the provider conforms to the framework.
+- **Saw:** talosctl built with the integration; `cluster create apple-container` ran the maker
+  (calling our GenOptions), created a per-cluster vmnet network `aegis-up` on the requested subnet
+  (10.5.0.0/24 — vmnet honored `--subnet` and the host could reach it), launched cp `10.5.0.2` +
+  worker `10.5.0.3`, applied configs, and `postCreate` bootstrapped + passed the **entire**
+  `talosctl health` sequence (etcd, apid, kubelet, all nodes Ready, kube-proxy, **coredns**,
+  schedulable) before merging kubeconfig. `cluster destroy` removed both nodes + the network →
+  `container ls -a` clean.
+- **Surprised me:** the per-cluster custom network "just worked" — I'd braced for vmnet rejecting a
+  non-default subnet, but it honored `--subnet` and routed it to the host, so the docker-style
+  per-cluster network isolation carried over for free.
+- **Verdict:** the upstream integration is real — `talosctl cluster create apple-container` produces
+  a healthy cluster and tears down clean through the canonical commands. The merge-back is a
+  mechanical copy (the delta is preserved under `upstream/`). The provider needed zero framework
+  changes. → remaining: CI gates.
+
 Fill each first-person as the gate runs. Surprises and dead-ends are the most valuable
 entries — they are what a reviewer reads as a human having actually done the work.
