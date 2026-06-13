@@ -19,7 +19,7 @@ jobs:
   build-test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: actions/setup-go@v5
         with:
           go-version: "1.26.4" # >= 1.26.4 closes GO-2026-5037 / GO-2026-5039 (stdlib)
@@ -31,18 +31,19 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: actions/setup-go@v5
         with:
           go-version: "1.26.4"
-      - uses: golangci/golangci-lint-action@v6
-        with:
-          version: latest
+      # Run golangci-lint v2 via `go run` (matches .golangci.yml's v2 schema, lefthook, and the
+      # local verification). golangci-lint-action@v6 installs golangci-lint v1, which cannot parse
+      # a v2 config; pinning the version here avoids that action<->lint major-version coupling.
+      - run: go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest run ./...
 
   vuln:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: actions/setup-go@v5
         with:
           go-version: "1.26.4"
@@ -51,7 +52,7 @@ jobs:
   secrets:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
       - uses: gitleaks/gitleaks-action@v2
