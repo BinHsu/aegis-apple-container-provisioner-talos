@@ -118,7 +118,21 @@ observed. Empty-but-claimed verification is the exact failure this spike is buil
   (`container ls -a` empty). The hypothesis is proven end-to-end by hand. The recipe (caps + tmpfs-set
   excluding /opt + cp memory) is the exact contract G5's provider must encode. → current gate G5.
 
-## G5 aegis provider — PENDING
+## 2026-06-13 — G5: aegis provider Create/Reflect/Destroy ✅ PASS (Claude-run, pending final acceptance)
+- **Ran:** built the `provider/apple` package against the real `pkg/provision`, then `cmd/aegis`
+  (in-process GenOptions→bundle→Create), provisioned a cluster, bootstrapped, then `aegis -destroy`.
+- **Expected:** the provider — not a hand-run sequence — brings up the same cluster G4 did by hand,
+  and tears it down clean.
+- **Saw:** Create launched cp `.20` + worker `.21` (distinct IPs; the in-code assertion held),
+  applied the endpoint-patched configs over the maintenance API, and after bootstrap **both nodes
+  reached Ready** (coredns + control plane all Running). `aegis -destroy` reflected state and removed
+  both nodes → `container ls -a` empty.
+- **Surprised me:** the design call that paid off was abandoning docker's USERDATA model. I first
+  mirrored docker (USERDATA at launch); reading the maker showed the IP must be known at gen time,
+  which DHCP can't satisfy — so the provider had to launch-then-discover-then-apply. Once I accepted
+  that divergence (and kept it inside the provider, no framework change), it worked first try.
+- **Verdict:** G5 core lifecycle PASS. A competent, spec-conforming provider that brings up a real
+  cluster with no everyday-IP bug. Remaining: BVA unit tests, the upstream cmd_apple.go mirror, CI gates.
 
 Fill each first-person as the gate runs. Surprises and dead-ends are the most valuable
 entries — they are what a reviewer reads as a human having actually done the work.

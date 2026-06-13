@@ -6,16 +6,25 @@ package apple
 
 import (
 	"context"
-	"errors"
 
 	"github.com/siderolabs/talos/pkg/provision"
 )
 
-// Reflect reconstructs a Cluster from the live runtime + saved state, without a prior
-// Create in this process (used by `cluster destroy`/`show`).
+// Reflect reconstructs a Cluster from saved state, for callers (e.g. `cluster destroy`/`show`)
+// that did not run Create in this process.
 //
-// TODO(G5): implement, mirroring docker/reflect.go: read state.yaml via provision.ReadState,
-// then `container inspect` / `container network inspect` to refresh node IPs and network info.
+// Unlike the docker provider — which rebuilds from the live runtime by listing containers by
+// label — apple/container's `container ls` has no label filter, so we read the state.yaml that
+// Create persisted (provision.ReadState). *provision.State already satisfies provision.Cluster
+// (Provisioner/Info/StatePath), and it carries the node IDs and recorded IPs, which is what
+// Destroy needs. Node IDs are stable (we launch with --name), so teardown is reliable even
+// though a node's DHCP IP may have changed since Create (the G3 cold-restart gap); a future
+// refinement could refresh IPs via `container inspect`.
 func (p *provisioner) Reflect(ctx context.Context, clusterName, stateDirectory string) (provision.Cluster, error) {
-	return nil, errors.New("apple-container provisioner: Reflect not yet implemented (G5 in progress)")
+	state, err := provision.ReadState(ctx, clusterName, stateDirectory)
+	if err != nil {
+		return nil, err
+	}
+
+	return state, nil
 }

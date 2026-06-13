@@ -204,6 +204,37 @@ container ls -a    # EMPTY — no orphan VMs; default network intact
 **Verified result:** both nodes `Ready` (v1.36.1, Talos v1.13.3, kernel 6.18.15, containerd 2.2.4); all
 control-plane + flannel + kube-proxy + coredns pods `1/1 Running`; `talosctl health` green; teardown leaves
 `container ls -a` empty. **G4 PASS → G5.** The hypothesis holds: apple/container runs a real Talos cluster.
-## G5 — aegis provider build + run — STUB
+## G5 — aegis provider build + run (verified 2026-06-13)
+
+The provider lives in `provider/apple/` as a Go module importing the real
+`github.com/siderolabs/talos/pkg/provision` (out-of-tree; the compile is the "directory move,
+not rewrite" proof). `cmd/aegis` is a thin driver that mirrors `talosctl cluster create`'s
+in-process config-gen (so the provider's `GenOptions` is exercised) without forking talosctl.
+
+```bash
+go build ./...                       # provider compiles against the real interface
+go build -o _out/aegis ./cmd/aegis
+
+# provision: in-process GenOptions -> config bundle -> Create (launch bare + DHCP reconcile)
+./_out/aegis                         # defaults: 1 cp (4096MB) + 1 worker (2048MB), Talos v1.13.3
+
+# converge (operator step, as talosctl's postCreate does)
+export TALOSCONFIG=_out/clusters/aegis/talosconfig
+talosctl config endpoint <cp-ip> && talosctl config node <cp-ip>
+talosctl bootstrap && talosctl health
+talosctl kubeconfig ./kubeconfig && KUBECONFIG=./kubeconfig kubectl get nodes
+
+# teardown via the provider (Reflect + Destroy)
+./_out/aegis -destroy
+container ls -a                       # EMPTY — clean
+```
+
+**Verified result (2026-06-13):** the provider provisioned a 2-node cluster — cp `192.168.64.20`,
+worker `192.168.64.21` (**distinct IPs**, asserted in code) — booted bare, patched each config's
+control-plane endpoint with the discovered cp IP, applied via `talosctl apply-config --insecure`,
+bootstrapped, and reached **both nodes `Ready`** (v1.36.1, Talos v1.13.3) with coredns + all
+control-plane pods Running. `aegis -destroy` (Reflect from `state.yaml` → Destroy) left
+`container ls -a` clean and removed the state dir. **G5 core lifecycle (Create/Reflect/Destroy)
+PASS.** The provider does the whole DHCP reconciliation itself — `pkg/provision` is unmodified.
 
 Each STUB is filled with the real, reproduced commands as its gate runs — never before.

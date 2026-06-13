@@ -51,6 +51,7 @@ func run() error {
 		workerMemMB = flag.Int64("worker-memory", 2048, "worker memory (MB)")
 		cpCount     = flag.Int("controlplanes", 1, "number of control-plane nodes")
 		workerCount = flag.Int("workers", 1, "number of worker nodes")
+		destroy     = flag.Bool("destroy", false, "destroy the named cluster (Reflect + Destroy) instead of creating it")
 	)
 
 	flag.Parse()
@@ -63,6 +64,21 @@ func run() error {
 	}
 
 	defer prov.Close() //nolint:errcheck
+
+	if *destroy {
+		cluster, err := prov.Reflect(ctx, *clusterName, *stateDir)
+		if err != nil {
+			return fmt.Errorf("reflecting cluster %q: %w", *clusterName, err)
+		}
+
+		if err = prov.Destroy(ctx, cluster); err != nil {
+			return fmt.Errorf("destroying cluster %q: %w", *clusterName, err)
+		}
+
+		fmt.Printf("destroyed cluster %q\n", *clusterName)
+
+		return nil
+	}
 
 	// Talos version contract derived from the image tag (e.g. ...:v1.13.3 -> v1.13.3).
 	talosVersion := *talosImage
