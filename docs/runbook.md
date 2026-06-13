@@ -26,6 +26,75 @@ AI-comprehensive-without-verification trap this spike explicitly avoids.
 > `kind` is **not** part of this fallback — it is kubeadm-in-Docker, not Talos. It appears in the
 > spike only as a shared-kernel comparison point, never as a substrate to keep.
 
+## Tutorial — bring up and verify a cluster from zero
+
+A complete walkthrough. **Every command below was run end to end and verified** (2026-06-13; see
+`VERIFICATION.md`). Two paths: **Path A** drives the real `talosctl cluster create apple-container`
+(the upstream shape); **Path B** uses this repo's lighter `cmd/aegis` driver (no Talos fork). The
+gate-by-gate sections further down are the detailed receipts behind each step.
+
+### 0. Prerequisites
+See the Requirements table above. macOS 26 / Apple Silicon; then:
+```bash
+container system kernel set --recommended      # kata-containers 3.28.0 arm64 (no default kernel ships)
+container --version                            # 1.0.0
+talosctl version --client                      # v1.13.3
+go version                                     # >= 1.26.4
+```
+
+### Path A — `talosctl cluster create apple-container` (recommended)
+Build a talosctl that has the apple-container provider by applying this repo's delta to a Talos
+checkout (the files only compile inside the Talos tree — that's why they live under `upstream/`):
+```bash
+git clone --branch v1.13.3 https://github.com/siderolabs/talos _out/talos-fork
+F=_out/talos-fork; C=$F/cmd/talosctl/cmd/mgmt/cluster/create
+cp -R provider/apple                                          $F/pkg/provision/providers/apple
+cp upstream/$C/cmd_apple.go upstream/$C/create_apple.go       $C/            2>/dev/null || \
+  { cp upstream/cmd/talosctl/cmd/mgmt/cluster/create/cmd_apple.go     $C/; \
+    cp upstream/cmd/talosctl/cmd/mgmt/cluster/create/create_apple.go  $C/; \
+    cp upstream/cmd/talosctl/cmd/mgmt/cluster/create/clusterops/apple.go            $C/clusterops/; \
+    cp upstream/cmd/talosctl/cmd/mgmt/cluster/create/clusterops/configmaker/apple.go $C/clusterops/configmaker/; \
+    cp upstream/cmd/talosctl/cmd/mgmt/cluster/create/clusterops/configmaker/internal/makers/apple.go $C/clusterops/configmaker/internal/makers/; }
+( cd $F && git apply ../../upstream/pkg/provision/providers/factory.go.diff && go build -o /tmp/talosctl-apple ./cmd/talosctl )
+
+# out-of-box defaults: Talos v1.13.3 node image, default Kubernetes version, 2GiB control-plane
+/tmp/talosctl-apple cluster create apple-container --name demo
+```
+`cluster create` blocks until the full health sequence passes (etcd → control plane → all nodes
+Ready → kube-proxy → coredns), merges kubeconfig, and prints the node list.
+
+### Path B — `cmd/aegis` driver (no Talos fork)
+```bash
+go build -o _out/aegis ./cmd/aegis
+./_out/aegis -name demo                        # launches nodes + applies config; prints next steps
+export TALOSCONFIG=_out/clusters/demo/talosconfig
+talosctl config endpoint <cp-ip> && talosctl config node <cp-ip>   # IPs printed by the driver
+talosctl bootstrap && talosctl health
+talosctl kubeconfig ./kubeconfig && export KUBECONFIG=$PWD/kubeconfig
+```
+
+### Verify — run a real workload (the canonical nginx)
+```bash
+kubectl get nodes -o wide                       # both Ready: Talos (v1.13.3), kernel 6.18.15 (arm64)
+kubectl create deployment nginx --image=nginx   # PodSecurity 'restricted' warning is expected & harmless
+kubectl expose deployment nginx --port=80
+kubectl rollout status deployment/nginx         # -> successfully rolled out
+kubectl get pods -o wide                         # nginx 1/1 Running on the worker; pod IP on the flannel net
+# in-cluster reachability — exercises CoreDNS + the Service + flannel/kube-proxy:
+kubectl run curltest --image=curlimages/curl --restart=Never --rm -i --command -- \
+  curl -sS -o /dev/null -w 'HTTP %{http_code}\n' http://nginx.default.svc.cluster.local
+# -> HTTP 200
+```
+
+### Teardown — clean, no orphans
+```bash
+/tmp/talosctl-apple cluster destroy --name demo   # Path A   (Path B: ./_out/aegis -name demo -destroy)
+container ls -a                                   # empty
+container network ls                              # only "default"
+```
+
+---
+
 ## G0 — install Apple `container` (verified procedure)
 
 Official signed pkg from the apple/container release. **Vet the signature before installing.**

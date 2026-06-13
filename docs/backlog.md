@@ -14,8 +14,9 @@ Status (2026-06-13): the provider exists (G5 done), so the code gates **landed**
 - **Pre-commit** (`lefthook.yml`): local mirror (gofmt + golangci-lint pre-commit; vet + test pre-push),
   linters via `go run` (non-host-mutating).
 Already enforced server-side (via `gh`): secret scanning + push protection, Dependabot.
-Still backlog: SHA-pin action versions (note in ci.yml), CodeQL, release flow, branch protection
-(deferred until pushed/PR'd).
+- **Branch protection** (landed 2026-06-13, post-CI-green): `main` blocks force-push + deletion and
+  requires the 4 CI checks (strict); `enforce_admins=false` so solo direct-push isn't gated.
+Still backlog: SHA-pin action versions (note in ci.yml), CodeQL, release flow.
 
 ## Pre-commit hooks (local gate — fail before a bad commit leaves the machine)
 - `gofmt` / `goimports` — formatting, zero debate

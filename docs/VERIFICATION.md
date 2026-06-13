@@ -206,5 +206,20 @@ observed. Empty-but-claimed verification is the exact failure this spike is buil
   true cross-restart survival needs persistent `--volume` for /var+/system/state AND an upstream
   static-IP/DHCP-reservation in apple/container. Out of scope for the spike; documented as a known limit.
 
+## 2026-06-13 — G5/usability: real workload + repo hardening ✅ (Claude-run, pending final acceptance)
+- **Ran:** out-of-box `talosctl cluster create apple-container --name demo` (default image/k8s/2GiB,
+  mirrors the official Talos flow) → deployed the canonical `nginx` deployment → exposed a Service →
+  curled it from an in-cluster pod. (This is the runbook "Tutorial" walkthrough, run verbatim.)
+- **Saw:** both nodes Ready; `nginx` 1/1 Running on the worker (pod IP `10.244.1.2` on the flannel
+  pod network); Service `nginx` ClusterIP `10.96.11.115:80`; in-cluster
+  `curl http://nginx.default.svc.cluster.local` → **HTTP 200**. CoreDNS + Service routing + kube-proxy
+  + CNI all work. The `PodSecurity "restricted"` warning on bare nginx is expected (the cluster ships
+  standard PSA admission). Clean teardown.
+- **Repo hardening (public-repo protections):** branch protection on `main` — block force-push +
+  deletion, require the 4 CI checks (build-test/lint/vuln/secrets, strict), `enforce_admins=false` so
+  solo direct-push isn't blocked; secret scanning + push protection + Dependabot already enabled.
+- **Verdict:** a genuinely usable Kubernetes cluster (real workload reachable in-cluster), not just
+  nodes Ready. The runbook Tutorial is verified end to end — a forker can reproduce from zero.
+
 Fill each first-person as the gate runs. Surprises and dead-ends are the most valuable
 entries — they are what a reviewer reads as a human having actually done the work.
