@@ -1,8 +1,16 @@
 # Verification log — first person: what was run, what was seen
 
-The proof that a **human verified**, not just that artifacts exist. This is the committed,
-forker-facing distillation of the loop's raw `_out/notes/` (gitignored). One entry per
-verification event: *what I ran · what I expected · what I saw · what surprised me · verdict.*
+The proof that the work was **actually run and a human accepted it**, not just that artifacts
+exist. This is the committed, forker-facing distillation of the loop's raw `_out/notes/`
+(gitignored). One entry per verification event: *what I ran · what I expected · what I saw ·
+what surprised me · verdict.*
+
+**Execution & acceptance model (2026-06-13).** Within the dev cycle **Claude drives the
+non-interactive G1+ steps** and self-drives G1→GN with **no intermediate acceptance halt**;
+**Bin accepts once, at a final total sign-off** at the end of the run. Each entry attributes
+execution **honestly** — `Claude-run, pending final acceptance` vs Bin's own hands-on — so "a
+human verified" never means "Claude ran it and we pretended Bin did." Honest attribution is
+load-bearing here: the whole spike exists to avoid AI-comprehensive-without-visible-human-judgment.
 
 **Don't pre-fill gates not yet run.** An entry exists only after the thing was actually
 observed. Empty-but-claimed verification is the exact failure this spike is built to avoid.
@@ -15,8 +23,8 @@ observed. Empty-but-claimed verification is the exact failure this spike is buil
 - **Saw:** `Developer ID Installer: Apple Inc. - Containerization (UPBK2H6LZM)`; "trusted by
   the Apple notary service"; trusted timestamp 2026-06-09 — matches the 1.0.0 release date.
 - **Verdict:** legitimate official artifact, cleared to install.
-- *(Performed in-session via Claude as operator, at Bin's direction. The hands-on gate
-  verifications below are Bin's.)*
+- *(Performed in-session via Claude as operator, at Bin's direction. G0 install/smoke = Bin's
+  hands-on, in his terminal. G1+ below = Claude-run, pending the final total acceptance per the model above.)*
 
 ## 2026-06-13 — toolchain state ✅
 - **Saw:** talosctl v1.13.3, go 1.26.3, kind, OrbStack (docker), jq `/usr/bin/jq` — present.
