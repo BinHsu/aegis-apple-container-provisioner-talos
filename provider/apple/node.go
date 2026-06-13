@@ -6,7 +6,6 @@ package apple
 
 import (
 	"context"
-	"encoding/base64"
 	"fmt"
 	"net/netip"
 	"time"
@@ -80,23 +79,21 @@ func buildRunArgs(clusterReq provision.ClusterRequest, nodeReq provision.NodeReq
 		"--label", "talos.type="+nodeReq.Type.String(),
 	)
 
-	// Environment: same contract as the docker provider. PLATFORM=container makes Talos take its
-	// container code path; USERDATA carries the base64 machine config so the node self-configures
-	// at boot (no maintenance-mode apply-config needed) — provided apple/container forwards --env
-	// into the guest init, which Create verifies empirically before relying on it.
+	// Environment. PLATFORM=container makes Talos take its container code path; TALOSSKU is
+	// informational (matches the docker provider).
+	//
+	// NB: unlike docker we deliberately do NOT inject USERDATA here. The docker provider can bake
+	// the machine config in at launch because it assigns each node a static IP, so the config's
+	// cluster.controlPlane.endpoint (and apiserver cert SANs) are known up front. apple/container
+	// assigns IPs via vmnet DHCP (no static --ip; verified G3), so the control-plane IP is not
+	// known until after launch. Nodes therefore boot bare into maintenance mode; Create discovers
+	// the IPs, patches the endpoint, and applies the config over the maintenance API (the
+	// post-launch reconciliation that the G4 manual flow proved). This keeps the whole DHCP
+	// divergence inside the provider — no change to the upstream pkg/provision framework.
 	args = append(args,
 		"--env", "PLATFORM=container",
 		"--env", fmt.Sprintf("TALOSSKU=%dCPU-%dRAM", nodeReq.NanoCPUs/(1000*1000*1000), nodeReq.Memory/(1024*1024)),
 	)
-
-	if !nodeReq.SkipInjectingConfig && nodeReq.Config != nil {
-		cfg, err := nodeReq.Config.EncodeString()
-		if err != nil {
-			return nil, fmt.Errorf("encoding machine config for %q: %w", nodeReq.Name, err)
-		}
-
-		args = append(args, "--env", "USERDATA="+base64.StdEncoding.EncodeToString([]byte(cfg)))
-	}
 
 	if clusterReq.Network.Name != "" {
 		args = append(args, "--network", clusterReq.Network.Name)

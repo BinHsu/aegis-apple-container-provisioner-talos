@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net"
 	"path/filepath"
+	"slices"
 	"strconv"
 
 	"github.com/siderolabs/talos/pkg/machinery/constants"
@@ -17,12 +18,10 @@ import (
 
 // Create provisions a Talos cluster on Apple's `container` runtime.
 //
-// Flow mirrors the in-tree docker provider: init state -> ensure network -> launch
-// control-plane then worker nodes -> record ClusterInfo -> save state. The node-launch
-// recipe (caps, tmpfs set sans /opt, memory, USERDATA env) lives in node.go and is the
-// contract verified by hand in G1-G4.
-//
-// `container run` pulls the image on demand, so there is no explicit image-pull step.
+// Flow mirrors the in-tree docker provider's shape (init state -> network -> launch
+// control-plane then workers -> record ClusterInfo -> save), with one forced divergence:
+// the DHCP reconciliation (see reconcileConfigs). `container run` pulls the image on demand,
+// so there is no explicit image-pull step.
 func (p *provisioner) Create(ctx context.Context, request provision.ClusterRequest, opts ...provision.Option) (provision.Cluster, error) {
 	options := provision.DefaultOptions()
 
@@ -47,29 +46,32 @@ func (p *provisioner) Create(ctx context.Context, request provision.ClusterReque
 		return nil, fmt.Errorf("failed to ensure network: %w", err)
 	}
 
-	fmt.Fprintln(options.LogWriter, "creating controlplane nodes")
+	// Launch order: control-plane first (so the first node is the control plane whose IP becomes
+	// the cluster endpoint), then workers.
+	orderedReqs := slices.Concat(request.Nodes.ControlPlaneNodes(), request.Nodes.WorkerNodes())
 
-	nodes, err := p.createNodes(ctx, request, request.Nodes.ControlPlaneNodes())
+	fmt.Fprintln(options.LogWriter, "launching nodes (bare; maintenance mode)")
+
+	nodes, err := p.createNodes(ctx, request, orderedReqs)
 	if err != nil {
 		return nil, err
 	}
 
-	fmt.Fprintln(options.LogWriter, "creating worker nodes")
-
-	workers, err := p.createNodes(ctx, request, request.Nodes.WorkerNodes())
-	if err != nil {
+	// Everyday-correctness guard: every node must get a distinct vmnet IP. A regression that
+	// handed nodes the same address (e.g. inspecting a shared name) would silently break the
+	// cluster, so we fail loudly instead.
+	if err = assertDistinctIPs(nodes); err != nil {
 		return nil, err
 	}
 
-	nodes = append(nodes, workers...)
-
-	// Kubernetes endpoint uses the discovered control-plane IP. apple/container assigns IPs via
-	// DHCP (no static --ip; G3), so unlike docker this cannot be computed from the CIDR upfront.
-	var kubernetesEndpoint string
-
-	if len(nodes) > 0 && len(nodes[0].IPs) > 0 {
-		kubernetesEndpoint = "https://" + net.JoinHostPort(nodes[0].IPs[0].String(), strconv.Itoa(constants.DefaultControlPlanePort))
+	// DHCP reconciliation: nodes booted bare; patch each config's control-plane endpoint with the
+	// discovered control-plane IP and apply it over the maintenance API.
+	if err = p.reconcileConfigs(ctx, request, orderedReqs, nodes, &options); err != nil {
+		return nil, err
 	}
+
+	controlPlaneIP := nodes[0].IPs[0]
+	kubernetesEndpoint := "https://" + net.JoinHostPort(controlPlaneIP.String(), strconv.Itoa(constants.DefaultControlPlanePort))
 
 	state.ClusterInfo = provision.ClusterInfo{
 		ClusterName: request.Name,
@@ -91,4 +93,24 @@ func (p *provisioner) Create(ctx context.Context, request provision.ClusterReque
 		clusterInfo: state.ClusterInfo,
 		statePath:   statePath,
 	}, nil
+}
+
+// assertDistinctIPs fails if any two nodes share an IP (an everyday-correctness regression guard).
+func assertDistinctIPs(nodes []provision.NodeInfo) error {
+	seen := make(map[string]string, len(nodes))
+
+	for _, node := range nodes {
+		if len(node.IPs) == 0 {
+			return fmt.Errorf("node %q has no IP", node.Name)
+		}
+
+		ip := node.IPs[0].String()
+		if other, dup := seen[ip]; dup {
+			return fmt.Errorf("nodes %q and %q were both assigned IP %s", other, node.Name, ip)
+		}
+
+		seen[ip] = node.Name
+	}
+
+	return nil
 }
