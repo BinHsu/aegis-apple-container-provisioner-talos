@@ -24,9 +24,18 @@ observed. Empty-but-claimed verification is the exact failure this spike is buil
 
 ---
 
-## G0 smoke (`container run ... echo ok`) — PENDING (Bin)
-> Expected: `ok`. Record what actually printed, and anything about boot time / first-run
-> kernel download that surprised you.
+## 2026-06-13 — G0: container install + smoke ✅ PASSED
+- **Ran:** (sudo install by Bin in his own terminal) `container --version` → 1.0.0; then
+  `container system kernel set --recommended`; then `container run --rm docker.io/library/alpine echo ok`.
+- **Expected:** `ok` from a booted micro-VM.
+- **Saw:** image fetched + unpacked → init image (vminitd, ~64 MB) fetched → `[6/6] Starting
+  container` → **`ok`**. The Virtualization.framework micro-VM boot path works on this machine.
+- **Surprised me:** (1) no default kernel ships — `container system start`/`run` fails until one
+  is set, and the prompt is interactive (no-tty headless fails); `--recommended` is the
+  non-interactive path. (2) the default kernel is **kata-containers 3.28.0 arm64** — confirms the
+  Kata-derived-kernel premise empirically. Carry into G1: this exact kernel's feature set is what
+  G1 inspects.
+- **Verdict:** G0 PASSED → current gate G1.
 
 ## G1 kernel feature matrix — PENDING
 ## G2 machined under vminitd — PENDING

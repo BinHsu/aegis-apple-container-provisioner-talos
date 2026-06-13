@@ -7,12 +7,21 @@ been run and its output checked (cross-referenced in `VERIFICATION.md`). Un-run 
 stubs — we do **not** pre-write unverified procedure. A runbook of untested commands is the
 AI-comprehensive-without-verification trap this spike explicitly avoids.
 
-## Prerequisites (verified 2026-06-13)
+## Requirements (a forker needs these)
 
-- macOS 26+, Apple Silicon — here: macOS 26.5.1 / arm64
-- `talosctl` v1.13.3 · `go` 1.26.3 · `kind` · OrbStack (docker) · `jq` — all present
-- Pin the Talos node image to **v1.13.3** to match `talosctl`
-- `kubectl` — verify present before G4 (`kubectl version --client`)
+| Tool | Version (tested) | For | When |
+|---|---|---|---|
+| macOS + Apple Silicon | 26.5.1 / arm64 | the whole runtime (Virtualization.framework) | always |
+| Apple `container` | 1.0.0 | exec target — runs Talos nodes as micro-VMs | G0+ |
+| └ default kernel | kata-containers 3.28.0 arm64 (`--recommended`) | the guest VM kernel | set at G0 |
+| `talosctl` | v1.13.3 | gen-config / apply-config / bootstrap / health | G4+ |
+| Talos node image | `ghcr.io/siderolabs/talos:v1.13.3` | the node OS — pin to `talosctl` | G1+ |
+| `kubectl` | any recent | G4 acceptance — nodes `Ready` | G4 |
+| `go` | 1.26.3 | build the aegis provider | G5 |
+| `siderolabs/talos` Go module | matches v1.13.3 | compile against `pkg/provision` | G5 |
+| `golangci-lint` | bundles gocyclo/gocognit/cyclop/funlen/maintidx | provider lint + complexity/BVA gates | G5 |
+| `jq` | any | parse `container` / `talosctl` JSON | G3+ |
+| `kind` + OrbStack/docker | — | fallback substrate (`orbstack + talos`) | fallback only |
 
 ## G0 — install Apple `container` (verified procedure)
 
@@ -29,15 +38,18 @@ pkgutil --check-signature container-1.0.0-installer-signed.pkg
 # Install (system service → needs sudo / password)
 sudo installer -pkg container-1.0.0-installer-signed.pkg -target /
 
-container --version
-container system start
-# Smoke — confirm exact run flags against `container run --help` on first use
-container run --rm docker.io/library/alpine echo ok      # expect: ok
+container --version                                      # 1.0.0
+# No default kernel ships. `container system start` prompts [Y/n] to download one
+# (interactive — fails in a headless/no-tty session). Use the non-interactive flag:
+container system kernel set --recommended                # downloads kata-containers 3.28.0 arm64
+container run --rm docker.io/library/alpine echo ok      # smoke — prints: ok
 ```
 
 Signature **verified 2026-06-13** → `Developer ID Installer: Apple Inc. - Containerization
-(UPBK2H6LZM)`, notarized, timestamp 2026-06-09 (matches 1.0.0 release). The sudo install +
-smoke are **PENDING** (run by Bin — host-mutating, needs password).
+(UPBK2H6LZM)`, notarized, timestamp 2026-06-09. Install (sudo, by Bin) + `kernel set
+--recommended` + smoke → **`ok`, G0 PASSED 2026-06-13**. The default kernel is
+**kata-containers 3.28.0** — empirical confirmation of the Kata-derived-kernel premise, and the
+exact kernel G1 must inspect.
 
 ## G1 — kernel feature matrix — STUB
 > Fill with the actual `container run` + in-VM inspection commands once executed and verified.

@@ -14,3 +14,6 @@ vendor/
 # local experiment artifacts
 _out/
 *.log
+
+# internal operating doc — loop anchor + personal schedule + craft notes (NOT forker-facing)
+docs/SPIKE.md
