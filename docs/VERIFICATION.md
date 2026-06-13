@@ -45,10 +45,79 @@ observed. Empty-but-claimed verification is the exact failure this spike is buil
   G1 inspects.
 - **Verdict:** G0 PASSED → current gate G1.
 
-## G1 kernel feature matrix — PENDING
-## G2 machined under vminitd — PENDING
-## G3 networking — PENDING
-## G4 manual five-step cluster — PENDING
+## 2026-06-13 — G1: kernel feature matrix ✅ PASSED (Claude-run, pending final acceptance)
+- **Ran:** one `container run --rm alpine` that dumped `/proc/filesystems`, `cgroup.controllers`,
+  and a `zcat /proc/config.gz` grep (command in `runbook.md` G1).
+- **Expected:** the k8s-critical set (overlayfs, cgroup v2, br_netfilter, conntrack, nf_tables,
+  iptables, nat, vxlan, veth) *present* — hoping for built-in, braced for "modular, needs privilege".
+- **Saw:** kernel `6.18.15` (kata 3.28.0). **Every** required feature is built-in `=y`; overlay in
+  `/proc/filesystems`; cgroup2 unified with `cpuset cpu io memory hugetlb pids`. `/proc/modules` is
+  **empty**.
+- **Surprised me:** (1) `/proc/config.gz` is actually present — many distro kernels strip it, so the
+  audit was authoritative instead of inferential. (2) *Nothing* is modular — all `=y`. That kills the
+  worry I was bracing for: a guest micro-VM can't `modprobe` without the module files + privilege, but
+  here there's nothing to load. The kernel-feature risk for Talos's k8s stack is **zero**.
+- **Verdict:** G1 PASS. The bet now rides entirely on **G2** (machined under vminitd) and G3
+  (networking) — kernel features are no longer a candidate wall. → current gate G2.
+
+## 2026-06-13 — G2: machined under vminitd ✅ PASSED w/ caveat (Claude-run, pending final acceptance)
+- **Ran:** `container run` the pinned Talos image — first default, then `--cap-add ALL`; captured console.
+- **Expected:** the project's central unknown — either machined boots as a child, or it detects it is
+  not PID 1 and bails. I genuinely did not know which.
+- **Saw — two surprises, both bigger than the question I asked:**
+  1. machined does **not** care about PID 1 — Talos has an explicit `"mode": "container"`; it boots,
+     health-checks, idles. The PID1 question I built the whole gate around was a *non-issue*.
+  2. The real wall is **privilege**, not init. Unprivileged, it dies on `fsopen("tmpfs")` EPERM (fatal
+     controller-runtime) and containerd loops on `oom_score_adj`/cgroup permission-denied. Exactly the
+     no-`Privileged` model the spike predicted for the docker path — but I reached it by running the
+     image *directly*, so it is the runtime's wall, not socktainer's.
+  3. `--cap-add ALL` **dissolves it** — controller-runtime fully up (nftables/`iptables-nft`, resolvers,
+     time servers), containerd stable, machined idle waiting for config. apple/container *does* expose
+     the capability lever the docker provisioner gets via `Privileged: true`.
+- **Surprised me most:** I expected G2 to be the likely hard wall ("highest-value negative result").
+  It inverted — G2 is a *positive* result that relocates the risk. The bet is no longer "can machined
+  run?" (yes) but "will networking (G3) and a real cluster (G4) hold up?"
+- **Verdict:** G2 PASS, conditional on `--cap-add ALL`. Hard design input for G5: provider launches
+  nodes with full caps. → current gate G3 (networking).
+
+## 2026-06-13 — G3: networking ✅ PASS for bring-up, w/ documented IP-stability gap (Claude-run, pending final acceptance)
+- **Ran:** two alpine containers on the `default` net; `container inspect` for IPs; `nc`+`ping` across
+  them; then stop/start to test IP stability; then a MAC-pin attempt to fix it.
+- **Expected:** per-node IPs + cross-node reachability (easy), and hoped IPs would survive restart.
+- **Saw:** IPs auto-assigned (`.6`/`.7`), TCP `:6443`→`OKPONG`, ICMP 0% loss ~0.6ms. **But restart moved
+  n1 `.6→.8`.** No `--ip` flag exists. I guessed MAC-pinning would pin the DHCP lease — ran with a fixed
+  MAC, MAC held but **IP still moved `.9→.10`**. So vmnet DHCP does not reserve by MAC.
+- **Surprised me:** the MAC-pin hypothesis felt obvious and was wrong — worth keeping in the writeup as a
+  tried-and-disproven path, not hidden. Also: reachability "just worked" with zero config, which is more
+  than the buggy qemu route (vmnet-shared MetalLB issue #12834) offers.
+- **Verdict:** G3 PASS for cluster bring-up (IPs + reachability cover G4's needs). Documented limitation:
+  dynamic IP, unstable across cold restart, no static lever. Provider must read IPs post-launch; the
+  restart gap is a candidate apple/container feature request, not a Talos fault. → current gate G4.
+
+## 2026-06-13 — G4: manual five-step cluster ✅ FULLY GREEN (Claude-run, pending final acceptance)
+- **Ran:** launched 1 cp + 1 worker from the Talos image, `gen config` / `apply-config --insecure` /
+  `bootstrap` / `kubeconfig`, then `talosctl health` + `kubectl get nodes`, then teardown. Recipe in `runbook.md` G4.
+- **Expected:** this is the gate I expected to break — "by Sunday or it's a wall." It broke three times,
+  each a distinct, instructive failure, then went fully green.
+- **Saw — the three walls and their fixes, in order:**
+  1. **`setupSharedFilesystems: invalid argument`** — applying the controlplane config triggered the full
+     boot sequence, which `mount(MS_SHARED|MS_REC)`s `/`,`/var`,`/etc/cni`,`/run`; those weren't mount
+     points, so EINVAL → Talos halted. Fix: `--tmpfs` those paths (research agent found the docker
+     provisioner does the same via volumes; I used apple/container's `--tmpfs`).
+  2. **apiserver never starts, CM/scheduler CrashLoop on `127.0.0.1:7445` EOF** — chased OOM (no), admission
+     (no), then saw it: the 512Mi apiserver static pod on a **1GB** node is OOM-killed at create with no log
+     (the heaviest pod is the only one that never appears). Fix: cp `-m 4096MB`. apiserver came up, both
+     nodes Ready.
+  3. **coredns stuck `ContainerCreating`: `failed to find plugin flannel/loopback in /opt/cni/bin`** — my
+     own over-mounting: `--tmpfs /opt` shadowed the image's shipped CNI binaries. Fix: drop `--tmpfs /opt`.
+- **Surprised me:** every wall was a *runtime/config* gap, never a Talos-can't-run-here wall. machined,
+  etcd, the whole control plane, flannel, kube-proxy, coredns all run unmodified once the node is launched
+  right. Also: the failure with the least logging (silent apiserver OOM) took the longest to crack —
+  "container not found" + downstream EOFs, no OOM line in dmesg.
+- **Verdict:** G4 PASS, fully green — both nodes Ready, `talosctl health` green, clean teardown
+  (`container ls -a` empty). The hypothesis is proven end-to-end by hand. The recipe (caps + tmpfs-set
+  excluding /opt + cp memory) is the exact contract G5's provider must encode. → current gate G5.
+
 ## G5 aegis provider — PENDING
 
 Fill each first-person as the gate runs. Surprises and dead-ends are the most valuable
