@@ -1,0 +1,20 @@
+# Repo-local git hooks (run `lefthook install` once). lefthook is a single pinned binary, so this
+# is non-host-mutating. It mirrors the CI gates locally so a bad commit fails before it leaves the
+# machine — a mechanical gate, not a prompt (docs/backlog.md). Linters run via `go run` so no global
+# tool install is needed; gitleaks/secret-scanning is enforced server-side + in CI.
+pre-commit:
+  parallel: true
+  commands:
+    gofmt:
+      glob: "*.go"
+      run: test -z "$(gofmt -l {staged_files})" || (gofmt -l {staged_files}; echo 'run: gofmt -w'; exit 1)
+    golangci-lint:
+      run: go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest run ./...
+
+pre-push:
+  parallel: true
+  commands:
+    vet:
+      run: go vet ./...
+    test:
+      run: go test ./...

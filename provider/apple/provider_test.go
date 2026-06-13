@@ -93,10 +93,7 @@ func TestBuildRunArgs_Recipe(t *testing.T) {
 		NanoCPUs: 2e9,
 	}
 
-	args, err := buildRunArgs(clusterReq, nodeReq)
-	if err != nil {
-		t.Fatal(err)
-	}
+	args := buildRunArgs(clusterReq, nodeReq)
 
 	joined := strings.Join(args, " ")
 

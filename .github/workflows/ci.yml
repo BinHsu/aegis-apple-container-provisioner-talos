@@ -1,0 +1,57 @@
+# CI for the apple-container provider module. Build + vet + the BVA unit tests + govulncheck +
+# secret scan. The empirical integration (talosctl cluster create apple-container) needs macOS +
+# Apple's container runtime (Virtualization.framework) and cannot run on hosted Linux runners, so
+# it stays a documented manual step (docs/runbook.md G5); CI verifies everything else.
+#
+# Actions are pinned to major version tags here; SHA-pinning (docs/backlog.md supply-chain gate)
+# is the next hardening step — apply with a tool such as `pinact` rather than hand-copied SHAs.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.4" # >= 1.26.4 closes GO-2026-5037 / GO-2026-5039 (stdlib)
+          cache: true
+      - run: go build ./...
+      - run: go vet ./...
+      - run: go test ./... -race
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.4"
+      - uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+
+  vuln:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.4"
+      - run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
+  secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2

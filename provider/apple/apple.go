@@ -66,7 +66,7 @@ func (p *provisioner) Close() error {
 // GenOptions provides additional config-generate options. Mirrors the docker provider:
 // Talos runs in container mode here too, so the same host-DNS and single-doc-network
 // adjustments apply.
-func (p *provisioner) GenOptions(networkReq provision.NetworkRequest, contract *config.VersionContract) ([]generate.Option, []bundle.Option) {
+func (p *provisioner) GenOptions(_ provision.NetworkRequest, contract *config.VersionContract) ([]generate.Option, []bundle.Option) {
 	var genOptions []generate.Option
 
 	if contract.HostDNSEnabled() {
@@ -123,6 +123,6 @@ func (p *provisioner) GetFirstInterfaceName() string {
 }
 
 // UserDiskName is not applicable to the container model (no user disks); mirrors docker.
-func (p *provisioner) UserDiskName(index int) string {
+func (p *provisioner) UserDiskName(_ int) string {
 	return ""
 }

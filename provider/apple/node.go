@@ -47,7 +47,7 @@ func nodeTmpfsPaths() []string {
 // buildRunArgs assembles the `container run` argument vector for one node from the verified
 // G4 recipe. It is a pure function so the recipe can be unit-tested (incl. BVA on node fields)
 // without launching a VM.
-func buildRunArgs(clusterReq provision.ClusterRequest, nodeReq provision.NodeRequest) ([]string, error) {
+func buildRunArgs(clusterReq provision.ClusterRequest, nodeReq provision.NodeRequest) []string {
 	args := []string{
 		"run", "--detach",
 		"--name", nodeReq.Name,
@@ -102,7 +102,7 @@ func buildRunArgs(clusterReq provision.ClusterRequest, nodeReq provision.NodeReq
 	// Image is the trailing positional argument.
 	args = append(args, clusterReq.Image)
 
-	return args, nil
+	return args
 }
 
 // ipDiscoveryTimeout bounds how long we wait for vmnet DHCP to assign a node its address.
@@ -110,12 +110,9 @@ const ipDiscoveryTimeout = 30 * time.Second
 
 // createNode launches one Talos node and returns its NodeInfo once it has an IP.
 func (p *provisioner) createNode(ctx context.Context, clusterReq provision.ClusterRequest, nodeReq provision.NodeRequest) (provision.NodeInfo, error) {
-	args, err := buildRunArgs(clusterReq, nodeReq)
-	if err != nil {
-		return provision.NodeInfo{}, err
-	}
+	args := buildRunArgs(clusterReq, nodeReq)
 
-	if _, err = p.run(ctx, args...); err != nil {
+	if _, err := p.run(ctx, args...); err != nil {
 		return provision.NodeInfo{}, fmt.Errorf("launching node %q: %w", nodeReq.Name, err)
 	}
 

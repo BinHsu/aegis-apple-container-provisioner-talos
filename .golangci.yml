@@ -1,0 +1,40 @@
+# golangci-lint v2 config. Complexity/length linters per docs/backlog.md (gocyclo, gocognit,
+# cyclop, funlen, maintidx) — a mechanical, auditable gate, not a prompt. Thresholds are generous;
+# the point is to fail a future regression that balloons a function, not to nitpick today's code.
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  enable:
+    - gocyclo
+    - gocognit
+    - cyclop
+    - funlen
+    - maintidx
+    - misspell
+    - revive
+    - unconvert
+    - unparam
+  settings:
+    errcheck:
+      # Writes to an in-memory/stdout log writer; the error is genuinely ignorable.
+      exclude-functions:
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+    gocyclo:
+      min-complexity: 25
+    gocognit:
+      min-complexity: 30
+    cyclop:
+      max-complexity: 25
+    funlen:
+      lines: 160
+      statements: 80
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
