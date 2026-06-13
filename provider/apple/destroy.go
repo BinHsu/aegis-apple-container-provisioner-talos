@@ -7,15 +7,51 @@ package apple
 import (
 	"context"
 	"errors"
+	"fmt"
+	"os"
 
 	"github.com/siderolabs/talos/pkg/provision"
 )
 
-// Destroy tears down a provisioned cluster. Must be idempotent and leave
-// `container ls -a` clean (G4 acceptance criterion).
+// Destroy tears down a provisioned cluster. It is idempotent (stop/remove ignore
+// "not found") and, per the G4 acceptance criterion, leaves `container ls -a` clean.
 //
-// TODO(G5): implement, mirroring docker/destroy.go: `container stop`/`container rm`
-// each node (no-op if already gone), remove the network, then os.RemoveAll(stateDir).
+// Node IDs come from the cluster's recorded state, so teardown does not depend on
+// `container ls` label filtering (which the CLI does not support).
 func (p *provisioner) Destroy(ctx context.Context, cluster provision.Cluster, opts ...provision.Option) error {
-	return errors.New("apple-container provisioner: Destroy not yet implemented (G5 in progress)")
+	options := provision.DefaultOptions()
+
+	for _, opt := range opts {
+		if err := opt(&options); err != nil {
+			return err
+		}
+	}
+
+	info := cluster.Info()
+
+	var errs []error
+
+	for _, node := range info.Nodes {
+		fmt.Fprintln(options.LogWriter, "destroying node", node.Name)
+
+		if err := p.stop(ctx, node.ID); err != nil {
+			errs = append(errs, err)
+		}
+
+		if err := p.remove(ctx, node.ID); err != nil {
+			errs = append(errs, err)
+		}
+	}
+
+	if err := p.destroyNetwork(ctx, info.Network.Name); err != nil {
+		errs = append(errs, err)
+	}
+
+	if statePath, err := cluster.StatePath(); err == nil {
+		if err := os.RemoveAll(statePath); err != nil {
+			errs = append(errs, err)
+		}
+	}
+
+	return errors.Join(errs...)
 }
