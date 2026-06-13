@@ -174,9 +174,37 @@ observed. Empty-but-claimed verification is the exact failure this spike is buil
   the user-facing command (count is fixed at 1, same as docker/qemu — multi-cp is the `dev`
   subcommand's feature); the provider's node loop supports N control-plane, just not exposed here.
 - **Verdict:** robust for everyday single-control-plane use (default mem, multi-worker, repeated
-  lifecycles, no leaks). **Not yet stressed:** 3-control-plane etcd quorum via the real command (not
-  exposed by design; reachable through `cmd/aegis --controlplanes`), long-running stability,
-  concurrent clusters, cold-restart (the known dynamic-IP limitation).
+  lifecycles, no leaks). Multi-control-plane + restart behaviour now measured below.
+
+## 2026-06-13 — G5/stress: 3-control-plane etcd quorum ✅ PASS (Claude-run, pending final acceptance)
+- **Ran:** `cmd/aegis -controlplanes 3 -workers 0 -cp-memory 2048` (the user-facing talosctl command
+  fixes control-plane count at 1, like docker/qemu, so this path drives the provider directly), then
+  bootstrapped cp-1 and let cp-2/cp-3 join.
+- **Saw:** 3 control-plane nodes (distinct IPs .22/.23/.24) all reached `Ready`; `talosctl etcd members`
+  shows a **real 3-member quorum** (all non-learner, correct peer URLs). Clean teardown.
+- **Verdict:** the provider's N-control-plane node loop + etcd quorum work. (Exposing a count flag on
+  the talosctl command is a separate upstream choice; docker/qemu don't either.)
+
+## 2026-06-13 — G5/stress: reboot & restart behaviour ✅ MEASURED (Claude-run, pending final acceptance)
+- **Ran:** on a healthy 1cp+1worker cluster — (1) `talosctl reboot` the control plane; (2) `container
+  stop` + `container start` the control plane (simulates a host/daemon restart of a node).
+- **Saw:**
+  - **(1) Talos refuses:** `method is not supported in container mode`. The node stays up, IP stable,
+    configured. So the "Talos reboot/upgrade changes IP or wipes state" vector **cannot occur** —
+    container-mode Talos nodes are immutable-ephemeral by Talos's own design; you recreate, not reboot.
+  - **(2) container stop/start = node lost:** IP changed (`.2 → .4`, vmnet DHCP, no reservation) AND
+    the node came back **blank** — `get machineconfig` fails TLS ("certificate signed by unknown
+    authority") because `/system/state` + `/var` are tmpfs (RAM), so config + etcd data are wiped on
+    cold restart. A single-control-plane cluster does not survive a node cold restart.
+- **Surprised me:** Talos blocking reboot in container mode actually *narrows* the limitation — the
+  only real trigger is a host/daemon restart, not anything Talos initiates.
+- **Verdict / scope of the limitation:** within a session (create→use→destroy) and against Talos
+  reboot/upgrade — **no impact**. On mac/daemon restart — the cluster is lost and must be recreated
+  (~4 min). Two coupled causes: tmpfs (no persistence) + DHCP (no static IP). docker avoids both
+  (persistent volumes + static IP); apple/container is a mild regression there, acceptable for
+  ephemeral dev. A provider Reflect IP-refresh would NOT help (the restarted node is blank regardless);
+  true cross-restart survival needs persistent `--volume` for /var+/system/state AND an upstream
+  static-IP/DHCP-reservation in apple/container. Out of scope for the spike; documented as a known limit.
 
 Fill each first-person as the gate runs. Surprises and dead-ends are the most valuable
 entries — they are what a reviewer reads as a human having actually done the work.
