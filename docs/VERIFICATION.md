@@ -253,5 +253,21 @@ observed. Empty-but-claimed verification is the exact failure this spike is buil
   upstream differentiator ("a third macOS path with cleaner LoadBalancer networking than qemu").
   Remaining untested: ingress-nginx specifically (rides on the now-working LoadBalancer Service).
 
+## 2026-06-14 — L7 ingress: ingress-nginx + Gateway API ✅ both PASS (Claude-run, pending final acceptance)
+- **Why:** WS0 needs L7 ingress. **kubernetes/ingress-nginx is RETIRED** (archived 2026-03-24; no
+  further releases/bugfixes/security; its README directs new users to Gateway API). So both the latest
+  ingress-nginx AND the modern Gateway API were tested on apple/container (cluster k8s v1.36.1).
+- **Ran:** MetalLB pool, then (A) ingress-nginx **v1.15.1** + Ingress; (B) Gateway API CRDs v1.5.1 +
+  **Envoy Gateway v1.8.1** + Gateway + HTTPRoute. Host-header curls from the host.
+- **Saw:**
+  - **A:** ingress-nginx v1.15.1 → host `nginx.local` **HTTP 200**. (My earlier failures were the OLD
+    v1.11.3, which predates k8s 1.36, plus install timing — not the substrate.)
+  - **B:** Envoy Gateway came up; the Gateway got VIP `10.5.0.240`; `gw.local` → **HTTP 200**,
+    `nope.local` → **404** (real host routing). (The first B attempt failed only because I installed
+    standard Gateway API CRDs AND Envoy Gateway's bundled CRDs → version conflict; install.yaml-only fixed it.)
+- **Verdict:** apple/container runs full L7 ingress end-to-end, host-reachable, via BOTH the legacy
+  ingress-nginx and the modern Gateway API. The WS0 ingress question is closed; a strong upstream story.
+  **Finding for WS0:** its plan still says "ingress-nginx" — that's retired; use Gateway API (verified here).
+
 Fill each first-person as the gate runs. Surprises and dead-ends are the most valuable
 entries — they are what a reviewer reads as a human having actually done the work.
