@@ -237,5 +237,21 @@ observed. Empty-but-claimed verification is the exact failure this spike is buil
 - **Verdict:** **Bin-accepted 2026-06-14.** The provider, the upstream integration, and the forker
   runbook are verified by the human, from zero, on a fresh checkout. The spike's acceptance gate is cleared.
 
+## 2026-06-14 — MetalLB L2 LoadBalancer ✅ PASS, incl. the host-facing ARP (Claude-run, pending final acceptance)
+- **Why:** the downstream WS0 work (greeter on local Talos) needs MetalLB + ingress-nginx, and the
+  sibling qemu-on-macOS path is known-broken there (#12834: vmnet-shared drops MetalLB L2's gratuitous
+  ARP, so the VIP is unreachable). apple/container also uses vmnet — untested until now.
+- **Ran:** cluster up → install MetalLB v0.14.8 → L2 IPAddressPool in the node subnet (10.5.0.240-250)
+  → expose nginx as `type=LoadBalancer` → curl the assigned VIP from inside the cluster AND from the host.
+- **Saw:** MetalLB assigned `EXTERNAL-IP 10.5.0.240`; **in-cluster curl → HTTP 200**; **host curl →
+  HTTP 200**; and the host's ARP table learned the VIP (`10.5.0.240 at f2:6c:.. on bridge105`) — i.e.
+  apple/container's vmnet **forwarded the gratuitous ARP** that the qemu-vmnet path drops. (The speaker
+  DaemonSet `rollout status` timed out in the script, but the working host-ARP + HTTP 200 prove the
+  speaker was announcing — a check artifact, not a failure.) Clean teardown.
+- **Verdict:** MetalLB L2 LoadBalancer works end to end on apple/container, including host reachability
+  — the exact thing the buggy qemu route fails. Closes the WS0 networking risk and is a concrete
+  upstream differentiator ("a third macOS path with cleaner LoadBalancer networking than qemu").
+  Remaining untested: ingress-nginx specifically (rides on the now-working LoadBalancer Service).
+
 Fill each first-person as the gate runs. Surprises and dead-ends are the most valuable
 entries — they are what a reviewer reads as a human having actually done the work.
