@@ -389,5 +389,41 @@ implementation was unit-tested but unverified on live hardware until this sessio
 
 ---
 
+## 2026-06-26 — G6: stable hostname endpoint (busybox, host DNS) ✅ VERIFIED
+
+**Environment:** macOS Apple Silicon · `container` CLI 1.0.0 · busybox image.
+**Prereq:** `sudo container system dns create aegis` (installs `/etc/resolver/containerization.aegis`
+forwarding `*.aegis` to 127.0.0.1:2053 — one-time per boot; does NOT survive a macOS reboot).
+
+### G6a — host resolves `<name>.<domain>` ✅ VERIFIED (2026-06-26, busybox)
+
+- **Ran:** `container run --detach --name b1.aegis docker.io/library/busybox sleep 3600`
+- **Saw:** `ping b1.aegis` returned replies; `dig @127.0.0.1 -p 2053 b1.aegis` returned the
+  container's vmnet IP. The host resolver forwarded `*.aegis` to the container DNS forwarder
+  exactly as documented.
+- **Key finding (no --hostname flag):** `container run --help` (container 1.0.0) lists `--name`
+  and `--dns-domain` but NO `--hostname` flag. The `--name` alone drives both the container ID
+  and the DNS A-record registered with the host resolver. `--dns-domain` is inside-container
+  resolv.conf only and plays no role in host-side resolution.
+- **IP auto-update after restart verified:** `container stop b1.aegis` → `container start b1.aegis`;
+  the IP changed (DHCP) and `ping b1.aegis` resolved to the NEW IP with no manual intervention.
+  The container DNS forwarder tracks the new IP and updates the A-record automatically.
+- **Verdict:** host-to-container DNS via `--name <fqdn>` works. A cold-restart IP change does
+  NOT break hostname resolution — only clients that cached the old IP suffer, not ones that
+  re-resolve the FQDN.
+
+### G6b — full Talos cluster with FQDN control-plane endpoint survives cold restart ⚠️ STILL-UNVERIFIED
+
+- **What this would test:** provision a cluster with `aegis -dns-domain aegis`; cold-restart
+  (`container stop` + `container start`) the control-plane node; confirm that `kubectl` and
+  `talosctl` — pointed at the FQDN, not the old IP — continue working without re-pointing.
+- **Status:** hardware verification pending. The mechanism is sound (G6a proves DNS auto-updates;
+  G5c proves state survives restart; patchConfig sets certSANs to the FQDN so TLS validates at
+  the new IP). The combined path has not yet been run end-to-end.
+- **Prereq caveat:** the `sudo container system dns create <domain>` resolver entry is erased on
+  macOS reboot and must be re-created before starting the cluster or re-pointing talosctl.
+
+---
+
 Fill each first-person as the gate runs. Surprises and dead-ends are the most valuable
 entries — they are what a reviewer reads as a human having actually done the work.

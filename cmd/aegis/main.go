@@ -54,13 +54,16 @@ func run() error {
 		cpCount     = flag.Int("controlplanes", 1, "number of control-plane nodes")
 		workerCount = flag.Int("workers", 1, "number of worker nodes")
 		destroy     = flag.Bool("destroy", false, "destroy the named cluster (Reflect + Destroy) instead of creating it")
+		dnsDomain   = flag.String("dns-domain", "aegis", "Apple container DNS domain for stable FQDN node names "+
+			"(<node>.<domain>); set to \"\" to disable FQDN naming and fall back to IP-only (v0.1.x). "+
+			"Prerequisite: sudo container system dns create <domain> (must re-run after macOS reboot).")
 	)
 
 	flag.Parse()
 
 	ctx := context.Background()
 
-	prov, err := apple.NewProvisioner(ctx)
+	prov, err := apple.NewProvisioner(ctx, apple.Config{DNSDomain: *dnsDomain})
 	if err != nil {
 		return err
 	}
@@ -186,14 +189,21 @@ func run() error {
 
 	fmt.Println("\n=== cluster provisioned ===")
 
-	var cpIP string
+	// cpEndpoint is what the operator should pass to `talosctl config endpoint`: the FQDN when a
+	// DNS domain is configured (stable across cold restarts), or the current DHCP IP otherwise.
+	var cpEndpoint string
 
 	for _, n := range info.Nodes {
 		role := "worker"
 		if n.Type == machine.TypeControlPlane || n.Type == machine.TypeInit {
 			role = "controlplane"
-			if cpIP == "" && len(n.IPs) > 0 {
-				cpIP = n.IPs[0].String()
+
+			if cpEndpoint == "" {
+				if *dnsDomain != "" {
+					cpEndpoint = n.ID // FQDN (e.g. "aegis-controlplane-1.aegis")
+				} else if len(n.IPs) > 0 {
+					cpEndpoint = n.IPs[0].String()
+				}
 			}
 		}
 
@@ -205,7 +215,7 @@ func run() error {
 	fmt.Printf("\ntalosconfig: %s\n", talosconfigPath)
 	fmt.Println("\nnext steps (operator):")
 	fmt.Printf("  export TALOSCONFIG=%s\n", talosconfigPath)
-	fmt.Printf("  talosctl config endpoint %s && talosctl config node %s\n", cpIP, cpIP)
+	fmt.Printf("  talosctl config endpoint %s && talosctl config node %s\n", cpEndpoint, cpEndpoint)
 	fmt.Printf("  talosctl bootstrap\n")
 	fmt.Printf("  talosctl health\n")
 	fmt.Printf("  talosctl kubeconfig ./kubeconfig && KUBECONFIG=./kubeconfig kubectl get nodes\n")

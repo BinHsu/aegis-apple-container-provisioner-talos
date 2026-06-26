@@ -37,6 +37,17 @@ const firstInterface = "eth0"
 // "directory move, not rewrite" contract this repo exists to keep.
 var _ provision.Provisioner = (*provisioner)(nil)
 
+// Config holds optional provisioner parameters for the apple/container provider.
+type Config struct {
+	// DNSDomain, when set, names every container as <node>.<domain> so Apple's container
+	// DNS forwarding resolves it from the host as a stable FQDN. The cluster control-plane
+	// endpoint and certificate SANs are set to this FQDN rather than the volatile DHCP IP,
+	// so kubeconfig and talosctl survive cold restarts. Default: empty (IP-based, v0.1.x
+	// behaviour). Prerequisite: run `sudo container system dns create <domain>` once; the
+	// entry does not survive a macOS reboot and must be re-created after one.
+	DNSDomain string
+}
+
 // provisioner drives Apple's `container` CLI to provision Talos nodes.
 //
 // Unlike the docker provisioner it holds no mapped host ports: apple/container nodes get
@@ -45,14 +56,17 @@ var _ provision.Provisioner = (*provisioner)(nil)
 type provisioner struct {
 	// containerCLI is the `container` binary we exec (the qemu-provider exec pattern).
 	containerCLI string
+	// dnsDomain is the Apple container DNS domain for stable FQDN container naming (see Config).
+	dnsDomain string
 }
 
 // NewProvisioner initializes the apple/container provisioner.
 //
 //nolint:revive // ctx kept for signature parity with docker.NewProvisioner / future use.
-func NewProvisioner(ctx context.Context) (provision.Provisioner, error) {
+func NewProvisioner(ctx context.Context, cfg Config) (provision.Provisioner, error) {
 	return &provisioner{
 		containerCLI: "container",
+		dnsDomain:    cfg.DNSDomain,
 	}, nil
 }
 

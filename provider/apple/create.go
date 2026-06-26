@@ -49,6 +49,17 @@ func (p *provisioner) Create(ctx context.Context, request provision.ClusterReque
 		return nil, fmt.Errorf("failed to ensure network: %w", err)
 	}
 
+	// DNS domain precheck: if hostname-endpoint mode is enabled, the resolver entry must exist
+	// before containers are launched. A missing entry means host-to-container FQDN lookups
+	// silently fall through to public DNS — the cluster would come up but the stable-endpoint
+	// goal is not met. Failing early with a clear message avoids a hard-to-diagnose connectivity
+	// gap after a (successful) create.
+	if p.dnsDomain != "" {
+		if err = p.checkDNSDomain(ctx, p.dnsDomain); err != nil {
+			return nil, err
+		}
+	}
+
 	// Launch order: control-plane first (so the first node is the control plane whose IP becomes
 	// the cluster endpoint), then workers.
 	orderedReqs := slices.Concat(request.Nodes.ControlPlaneNodes(), request.Nodes.WorkerNodes())
@@ -85,8 +96,16 @@ func (p *provisioner) Create(ctx context.Context, request provision.ClusterReque
 		return nil, err
 	}
 
-	controlPlaneIP := nodes[0].IPs[0]
-	kubernetesEndpoint := "https://" + net.JoinHostPort(controlPlaneIP.String(), strconv.Itoa(constants.DefaultControlPlanePort))
+	// KubernetesEndpoint: use the FQDN when a DNS domain is configured so it stays valid
+	// after a cold restart (DHCP IP changes; FQDN does not). nodes[0].ID holds the FQDN
+	// container name set by createNode when dnsDomain != "". Fall back to the discovered IP
+	// for v0.1.x IP-only behaviour.
+	var kubernetesEndpoint string
+	if p.dnsDomain != "" {
+		kubernetesEndpoint = "https://" + net.JoinHostPort(nodes[0].ID, strconv.Itoa(constants.DefaultControlPlanePort))
+	} else {
+		kubernetesEndpoint = "https://" + net.JoinHostPort(nodes[0].IPs[0].String(), strconv.Itoa(constants.DefaultControlPlanePort))
+	}
 
 	state.ClusterInfo = provision.ClusterInfo{
 		ClusterName: request.Name,

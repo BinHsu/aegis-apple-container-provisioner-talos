@@ -41,6 +41,40 @@ That is the niche: **no Docker *and* lightweight.** The `docker` provisioner is 
 
 The DHCP reconciliation — launch the node bare, read its assigned IP with `container inspect`, patch `cluster.controlPlane.endpoint`, then apply the config over the maintenance API — is the design crux, and is why a native provider works where a Docker-API shim cannot. See [`docs/ADR/0001-native-provider-vs-docker-shim.md`](docs/ADR/0001-native-provider-vs-docker-shim.md).
 
+## Stable hostname endpoint (v0.2.0)
+
+By default, `aegis` names every container as `<cluster>-<role>-N.<domain>` (e.g.
+`aegis-controlplane-1.aegis`) and sets `cluster.controlPlane.endpoint` and the certificate SANs
+to that FQDN. After a cold restart the DHCP IP changes but the FQDN stays resolvable — so
+`kubectl` and `talosctl` keep working without re-pointing, as long as Talos can reach the node by
+its new IP (which it can, because the serving cert includes the FQDN in its SANs).
+
+**One-time setup (must re-run after every macOS reboot):**
+
+```sh
+sudo container system dns create aegis
+```
+
+This installs `/etc/resolver/containerization.aegis`, forwarding `*.aegis` to
+`127.0.0.1:2053` (the container DNS forwarder). The forwarder automatically tracks IP changes
+across container restarts — no manual update needed when the DHCP IP shifts.
+
+**CLI flag:**
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `-dns-domain` | `aegis` | DNS domain for FQDN container naming. Set to `""` to disable FQDN naming and fall back to IP-only (v0.1.x behaviour). |
+
+**To disable FQDN naming** and fall back to IP-based endpoint (v0.1.x):
+
+```sh
+aegis -dns-domain ""
+```
+
+**Verification status:** host-to-container DNS and automatic IP-update after restart are verified
+(busybox, 2026-06-26). Full Talos cold-restart survival via FQDN endpoint is still unverified on
+hardware — see G6b in [`docs/VERIFICATION.md`](docs/VERIFICATION.md).
+
 ## Requirements
 
 - macOS 26+, Apple Silicon
