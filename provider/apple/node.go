@@ -112,13 +112,34 @@ func sanitizeVolumeName(s string) string {
 	return b.String()
 }
 
+// nodeFQDN returns the container name used for --name and as the container ID.
+// When domain is non-empty, it appends ".<domain>" to form a host-resolvable FQDN that
+// Apple's container DNS forwarding registers. When domain is empty the bare nodeName is
+// returned unchanged, preserving v0.1.x IP-only behaviour.
+//
+// Note: container run has no --hostname flag (verified 2026-06-26 against container 1.0.0);
+// --name alone drives both the container ID and the DNS A-record the host resolver sees.
+// The resulting k8s node name may contain a dot — Talos tolerates this in container mode.
+func nodeFQDN(nodeName, domain string) string {
+	if domain == "" {
+		return nodeName
+	}
+
+	return nodeName + "." + domain
+}
+
 // buildRunArgs assembles the `container run` argument vector for one node from the verified
 // G4 recipe. It is a pure function so the recipe can be unit-tested (incl. BVA on node fields)
 // without launching a VM.
-func buildRunArgs(clusterReq provision.ClusterRequest, nodeReq provision.NodeRequest) []string {
+//
+// dnsDomain, when non-empty, sets the container --name to an FQDN (<node>.<domain>) so
+// Apple's container DNS forwarding resolves the node from the host by name. Volume names
+// are derived from the bare nodeReq.Name regardless of the domain, so Create and Destroy
+// always agree on the same volume identifiers.
+func buildRunArgs(clusterReq provision.ClusterRequest, nodeReq provision.NodeRequest, dnsDomain string) []string {
 	args := []string{
 		"run", "--detach",
-		"--name", nodeReq.Name,
+		"--name", nodeFQDN(nodeReq.Name, dnsDomain),
 		// G2: machined dies on fsopen(tmpfs) EPERM without full capabilities. apple/container
 		// has no --privileged; --cap-add ALL is the equivalent of docker's Privileged:true.
 		"--cap-add", "ALL",
@@ -191,14 +212,17 @@ const ipDiscoveryTimeout = 30 * time.Second
 
 // createNode launches one Talos node and returns its NodeInfo once it has an IP.
 func (p *provisioner) createNode(ctx context.Context, clusterReq provision.ClusterRequest, nodeReq provision.NodeRequest) (provision.NodeInfo, error) {
-	args := buildRunArgs(clusterReq, nodeReq)
+	args := buildRunArgs(clusterReq, nodeReq, p.dnsDomain)
 
 	if _, err := p.run(ctx, args...); err != nil {
 		return provision.NodeInfo{}, fmt.Errorf("launching node %q: %w", nodeReq.Name, err)
 	}
 
-	// apple/container uses --name as the container ID.
-	id := nodeReq.Name
+	// The container ID is the --name we passed: FQDN when a DNS domain is set, bare name
+	// otherwise. NodeInfo.ID carries this so stop/remove/inspect all use the right handle.
+	// NodeInfo.Name stays as the bare node name so volume naming (nodeVolumeNames) and
+	// destroy label-sweep both derive the same identifiers as at create time.
+	id := nodeFQDN(nodeReq.Name, p.dnsDomain)
 
 	// Poll for the DHCP-assigned address (no static --ip; G3).
 	addr, err := p.waitForIPv4(ctx, id)

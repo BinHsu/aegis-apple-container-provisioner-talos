@@ -104,7 +104,7 @@ func TestBuildRunArgs_Recipe(t *testing.T) {
 		NanoCPUs: 2e9,
 	}
 
-	args := buildRunArgs(clusterReq, nodeReq)
+	args := buildRunArgs(clusterReq, nodeReq, "") // no domain: v0.1.x IP-only behaviour
 
 	joined := strings.Join(args, " ")
 
@@ -225,7 +225,7 @@ func TestVolumeNames_CreateDestroySymmetry(t *testing.T) {
 	nodeName := "aegis-worker-1"
 
 	// What buildRunArgs mounts (source side of the --volume args).
-	args := buildRunArgs(clusterReq, provision.NodeRequest{Name: nodeName, Type: machine.TypeWorker})
+	args := buildRunArgs(clusterReq, provision.NodeRequest{Name: nodeName, Type: machine.TypeWorker}, "")
 
 	mounted := map[string]string{} // target -> source
 
@@ -307,7 +307,7 @@ func TestClusterLabelSelector(t *testing.T) {
 	}
 
 	// The container label buildRunArgs writes must equal the selector, or the sweep can't find them.
-	args := buildRunArgs(provision.ClusterRequest{Name: "aegis"}, workerReq("aegis-worker-1"))
+	args := buildRunArgs(provision.ClusterRequest{Name: "aegis"}, workerReq("aegis-worker-1"), "")
 	if !hasPair(args, "--label", clusterLabelSelector("aegis")) {
 		t.Errorf("container is not labeled with the destroy selector %q; sweep would miss it\nargs: %s",
 			clusterLabelSelector("aegis"), strings.Join(args, " "))
@@ -404,6 +404,178 @@ func TestVolumesMatchingLabel(t *testing.T) {
 	want := []string{"aegis-w1-var", "aegis-w1-system-state"}
 	if !slices.Equal(got, want) {
 		t.Errorf("got %v, want %v (only aegis-labeled volumes)", got, want)
+	}
+}
+
+// TestNodeFQDN_Derivation exercises the nodeFQDN helper at the BVA boundaries (CLAUDE.md k):
+//
+//   - B-1 (empty domain): bare node name returned unchanged — v0.1.x IP-only behaviour.
+//   - B   (non-empty domain): node name + "." + domain returned.
+//   - Node name that already contains a dot: domain is still appended (no guard needed; the
+//     container CLI accepts dots in --name values and Apple's DNS forwarding registers the FQDN).
+func TestNodeFQDN_Derivation(t *testing.T) {
+	tests := []struct {
+		name, domain, want string
+	}{
+		// B-1: empty domain — no FQDN transformation.
+		{"aegis-controlplane-1", "", "aegis-controlplane-1"},
+		// B: simple domain — FQDN appended.
+		{"aegis-controlplane-1", "aegis", "aegis-controlplane-1.aegis"},
+		// Worker with domain.
+		{"aegis-worker-1", "aegis", "aegis-worker-1.aegis"},
+		// Multi-part domain (valid DNS).
+		{"cp1", "local.dev", "cp1.local.dev"},
+	}
+
+	for _, tt := range tests {
+		if got := nodeFQDN(tt.name, tt.domain); got != tt.want {
+			t.Errorf("nodeFQDN(%q, %q) = %q, want %q", tt.name, tt.domain, got, tt.want)
+		}
+	}
+}
+
+// TestBuildRunArgs_FQDNNaming verifies that buildRunArgs sets --name to the FQDN when a DNS domain
+// is provided, and to the bare node name when the domain is empty. It also confirms that volume
+// sources are always derived from the bare node name regardless of the domain — the volume names
+// must match what Create and Destroy compute from nodeVolumeNames(clusterName, bareNodeName).
+func TestBuildRunArgs_FQDNNaming(t *testing.T) {
+	clusterReq := provision.ClusterRequest{
+		Name:    "aegis",
+		Image:   "ghcr.io/siderolabs/talos:v1.13.3",
+		Network: provision.NetworkRequest{Name: "default"},
+	}
+
+	t.Run("no domain yields bare --name (v0.1.x behaviour)", func(t *testing.T) {
+		nodeReq := provision.NodeRequest{Name: "aegis-controlplane-1", Type: machine.TypeControlPlane}
+		args := buildRunArgs(clusterReq, nodeReq, "")
+		if !hasPair(args, "--name", "aegis-controlplane-1") {
+			t.Errorf("no domain must keep bare --name; got: %s", strings.Join(args, " "))
+		}
+	})
+
+	t.Run("domain set yields FQDN --name for control plane", func(t *testing.T) {
+		nodeReq := provision.NodeRequest{Name: "aegis-controlplane-1", Type: machine.TypeControlPlane}
+		args := buildRunArgs(clusterReq, nodeReq, "aegis")
+		const want = "aegis-controlplane-1.aegis"
+		if !hasPair(args, "--name", want) {
+			t.Errorf("with domain, --name must be FQDN %q; got: %s", want, strings.Join(args, " "))
+		}
+	})
+
+	t.Run("domain set yields FQDN --name for worker", func(t *testing.T) {
+		nodeReq := provision.NodeRequest{Name: "aegis-worker-1", Type: machine.TypeWorker}
+		args := buildRunArgs(clusterReq, nodeReq, "aegis")
+		const want = "aegis-worker-1.aegis"
+		if !hasPair(args, "--name", want) {
+			t.Errorf("worker FQDN: want %q; got: %s", want, strings.Join(args, " "))
+		}
+	})
+
+	t.Run("FQDN --name does not affect volume names", func(t *testing.T) {
+		// Volume sources derive from nodeVolumeNames(clusterName, nodeName) where nodeName is
+		// the bare name, not the FQDN. Create and Destroy both call nodeVolumeNames with the bare
+		// name, so buildRunArgs must mount the same bare-name volumes regardless of the domain.
+		nodeReq := provision.NodeRequest{
+			Name:     "aegis-controlplane-1",
+			Type:     machine.TypeControlPlane,
+			Memory:   4096 * 1024 * 1024,
+			NanoCPUs: 2e9,
+		}
+		args := buildRunArgs(clusterReq, nodeReq, "aegis")
+
+		if got := volumeSource(args, "/var"); got != "aegis-aegis-controlplane-1-var" {
+			t.Errorf("/var volume source: got %q, want %q", got, "aegis-aegis-controlplane-1-var")
+		}
+
+		if got := volumeSource(args, "/system/state"); got != "aegis-aegis-controlplane-1-system-state" {
+			t.Errorf("/system/state volume source: got %q, want %q", got, "aegis-aegis-controlplane-1-system-state")
+		}
+	})
+}
+
+// TestPatchConfigYAML_EndpointAndCertSANs verifies the YAML shape emitted by patchConfigYAML.
+// patchConfig is the strategic-merge layer over this YAML — this test verifies the shape
+// without needing a real config.Provider.
+//
+// BVA: two boundaries —
+//   - cpFQDN = "" (B-1): only the endpoint key is present; certSANs must be absent.
+//   - cpFQDN != "" (B):  endpoint + cluster.apiServer.certSANs + machine.certSANs all present.
+func TestPatchConfigYAML_EndpointAndCertSANs(t *testing.T) {
+	const ipEndpoint = "https://192.168.64.5:6443"
+
+	// B-1: no FQDN — endpoint only, no certSANs.
+	yaml := patchConfigYAML(ipEndpoint, "")
+	if !strings.Contains(yaml, "endpoint: "+ipEndpoint) {
+		t.Errorf("IP endpoint must appear in patch YAML:\n%s", yaml)
+	}
+
+	if strings.Contains(yaml, "certSANs") {
+		t.Errorf("certSANs must NOT appear when cpFQDN is empty:\n%s", yaml)
+	}
+
+	// B: FQDN set — endpoint is FQDN, certSANs appear in both cluster.apiServer and machine.
+	const fqdn = "aegis-controlplane-1.aegis"
+	fqdnEndpoint := "https://" + fqdn + ":6443"
+
+	yaml = patchConfigYAML(fqdnEndpoint, fqdn)
+
+	if !strings.Contains(yaml, "endpoint: "+fqdnEndpoint) {
+		t.Errorf("FQDN endpoint must appear in patch YAML:\n%s", yaml)
+	}
+
+	if !strings.Contains(yaml, "certSANs:") {
+		t.Errorf("certSANs block must appear when cpFQDN is set:\n%s", yaml)
+	}
+
+	if !strings.Contains(yaml, "- "+fqdn) {
+		t.Errorf("FQDN %q must be listed in certSANs:\n%s", fqdn, yaml)
+	}
+
+	// Both apiServer and machine sections must carry the SAN.
+	if !strings.Contains(yaml, "apiServer:") {
+		t.Errorf("cluster.apiServer section must be present:\n%s", yaml)
+	}
+
+	if !strings.Contains(yaml, "machine:") {
+		t.Errorf("machine section must be present:\n%s", yaml)
+	}
+}
+
+// TestDNSDomainInList verifies the pure JSON-parsing helper that backs dnsDomainExists.
+// BVA on list length (B = 0 empty, B+1 = 1 entry, B+N = multiple):
+//
+//   - empty list: domain absent (false, no error).
+//   - single-entry list matching the target: present (true, no error).
+//   - multi-entry list not containing the target: absent (false, no error).
+//   - multi-entry list containing the target among others: present (true, no error).
+//   - invalid JSON: error propagated, not swallowed.
+func TestDNSDomainInList(t *testing.T) {
+	tests := []struct {
+		desc    string
+		json    string
+		domain  string
+		want    bool
+		wantErr bool
+	}{
+		{"empty list (B=0)", `[]`, "aegis", false, false},
+		{"single match", `["aegis"]`, "aegis", true, false},
+		{"single non-match", `["other"]`, "aegis", false, false},
+		{"present among multiple", `["other","aegis","dev"]`, "aegis", true, false},
+		{"absent from multiple", `["other","dev"]`, "aegis", false, false},
+		{"invalid JSON", `not json`, "aegis", false, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.desc, func(t *testing.T) {
+			got, err := dnsDomainInList(tt.json, tt.domain)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("wantErr=%v, got err=%v", tt.wantErr, err)
+			}
+
+			if !tt.wantErr && got != tt.want {
+				t.Errorf("dnsDomainInList(%q, %q) = %v, want %v", tt.json, tt.domain, got, tt.want)
+			}
+		})
 	}
 }
 

@@ -236,6 +236,51 @@ func containersMatchingLabel(jsonOut, selector string) ([]string, error) {
 	return matches, nil
 }
 
+// dnsDomainInList parses the JSON output of `container system dns list --format json` and
+// reports whether domain is present. Pure function — extracted from dnsDomainExists so the
+// JSON parsing is unit-testable without the CLI.
+func dnsDomainInList(jsonOut, domain string) (bool, error) {
+	var domains []string
+	if err := json.Unmarshal([]byte(jsonOut), &domains); err != nil {
+		return false, fmt.Errorf("parsing DNS domain list: %w", err)
+	}
+
+	for _, d := range domains {
+		if d == domain {
+			return true, nil
+		}
+	}
+
+	return false, nil
+}
+
+// dnsDomainExists reports whether domain is registered with the Apple container system DNS
+// (`container system dns list --format json`). The CLI returns a JSON array of domain strings.
+func (p *provisioner) dnsDomainExists(ctx context.Context, domain string) (bool, error) {
+	out, err := p.run(ctx, "system", "dns", "list", "--format", "json")
+	if err != nil {
+		return false, fmt.Errorf("listing container DNS domains: %w", err)
+	}
+
+	return dnsDomainInList(out, domain)
+}
+
+// checkDNSDomain returns a clear, actionable error when domain is not registered. An absent
+// domain means Apple's container DNS forwarding has no resolver entry for it, so host-to-container
+// FQDN lookups will silently fall through to public DNS instead of reaching the node.
+func (p *provisioner) checkDNSDomain(ctx context.Context, domain string) error {
+	ok, err := p.dnsDomainExists(ctx, domain)
+	if err != nil {
+		return err
+	}
+
+	if !ok {
+		return fmt.Errorf("DNS domain %q not found — run: sudo container system dns create %s", domain, domain)
+	}
+
+	return nil
+}
+
 // volumesMatchingLabel parses `container volume list` JSON and returns the names whose labels satisfy
 // the selector. Pure so the filter is unit-testable without the CLI.
 func volumesMatchingLabel(jsonOut, selector string) ([]string, error) {

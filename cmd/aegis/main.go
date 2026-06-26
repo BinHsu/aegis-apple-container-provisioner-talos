@@ -54,13 +54,16 @@ func run() error {
 		cpCount     = flag.Int("controlplanes", 1, "number of control-plane nodes")
 		workerCount = flag.Int("workers", 1, "number of worker nodes")
 		destroy     = flag.Bool("destroy", false, "destroy the named cluster (Reflect + Destroy) instead of creating it")
+		dnsDomain   = flag.String("dns-domain", "aegis", "Apple container DNS domain for stable FQDN node names "+
+			"(<node>.<domain>); set to \"\" to disable FQDN naming and fall back to IP-only (v0.1.x). "+
+			"Prerequisite: sudo container system dns create <domain> (must re-run after macOS reboot).")
 	)
 
 	flag.Parse()
 
 	ctx := context.Background()
 
-	prov, err := apple.NewProvisioner(ctx)
+	prov, err := apple.NewProvisioner(ctx, apple.Config{DNSDomain: *dnsDomain})
 	if err != nil {
 		return err
 	}
@@ -68,28 +71,7 @@ func run() error {
 	defer prov.Close() //nolint:errcheck
 
 	if *destroy {
-		cluster, err := prov.Reflect(ctx, *clusterName, *stateDir)
-		if err != nil {
-			// A Create that failed before saveState leaves no state.yaml (and may leave a stuck
-			// container + named volumes). Don't abort: fall back to a label-based Destroy keyed on the
-			// cluster name so half-created clusters can still be cleaned. Other Reflect errors (corrupt
-			// state, parse failure) still surface.
-			if !errors.Is(err, fs.ErrNotExist) {
-				return fmt.Errorf("reflecting cluster %q: %w", *clusterName, err)
-			}
-
-			statePath := filepath.Join(*stateDir, *clusterName)
-			fmt.Printf("no state.yaml for cluster %q; sweeping by label %s\n", *clusterName, "talos.cluster.name="+*clusterName)
-			cluster = apple.ClusterRef(*clusterName, statePath)
-		}
-
-		if err = prov.Destroy(ctx, cluster); err != nil {
-			return fmt.Errorf("destroying cluster %q: %w", *clusterName, err)
-		}
-
-		fmt.Printf("destroyed cluster %q\n", *clusterName)
-
-		return nil
+		return runDestroy(ctx, prov, *clusterName, *stateDir)
 	}
 
 	// Talos version contract derived from the image tag (e.g. ...:v1.13.3 -> v1.13.3).
@@ -182,18 +164,54 @@ func run() error {
 		return fmt.Errorf("saving talosconfig: %w", err)
 	}
 
-	info := cluster.Info()
+	reportProvisioned(cluster.Info(), *dnsDomain, talosconfigPath)
 
+	return nil
+}
+
+// runDestroy tears down a named cluster. It tolerates a missing state.yaml (a Create that failed
+// before saveState, which may leave a stuck container + named volumes) by falling back to a
+// label-based sweep keyed on the cluster name; other Reflect errors still surface.
+func runDestroy(ctx context.Context, prov provision.Provisioner, clusterName, stateDir string) error {
+	cluster, err := prov.Reflect(ctx, clusterName, stateDir)
+	if err != nil {
+		if !errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("reflecting cluster %q: %w", clusterName, err)
+		}
+
+		statePath := filepath.Join(stateDir, clusterName)
+		fmt.Printf("no state.yaml for cluster %q; sweeping by label %s\n", clusterName, "talos.cluster.name="+clusterName)
+		cluster = apple.ClusterRef(clusterName, statePath)
+	}
+
+	if err = prov.Destroy(ctx, cluster); err != nil {
+		return fmt.Errorf("destroying cluster %q: %w", clusterName, err)
+	}
+
+	fmt.Printf("destroyed cluster %q\n", clusterName)
+
+	return nil
+}
+
+// reportProvisioned prints the provisioned nodes and the operator's next steps. The control-plane
+// endpoint is the FQDN when a DNS domain is configured (stable across cold restarts), else the
+// current DHCP IP.
+func reportProvisioned(info provision.ClusterInfo, dnsDomain, talosconfigPath string) {
 	fmt.Println("\n=== cluster provisioned ===")
 
-	var cpIP string
+	var cpEndpoint string
 
 	for _, n := range info.Nodes {
 		role := "worker"
 		if n.Type == machine.TypeControlPlane || n.Type == machine.TypeInit {
 			role = "controlplane"
-			if cpIP == "" && len(n.IPs) > 0 {
-				cpIP = n.IPs[0].String()
+
+			if cpEndpoint == "" {
+				if dnsDomain != "" {
+					cpEndpoint = n.ID // FQDN (e.g. "aegis-controlplane-1.aegis")
+				} else if len(n.IPs) > 0 {
+					cpEndpoint = n.IPs[0].String()
+				}
 			}
 		}
 
@@ -205,10 +223,8 @@ func run() error {
 	fmt.Printf("\ntalosconfig: %s\n", talosconfigPath)
 	fmt.Println("\nnext steps (operator):")
 	fmt.Printf("  export TALOSCONFIG=%s\n", talosconfigPath)
-	fmt.Printf("  talosctl config endpoint %s && talosctl config node %s\n", cpIP, cpIP)
+	fmt.Printf("  talosctl config endpoint %s && talosctl config node %s\n", cpEndpoint, cpEndpoint)
 	fmt.Printf("  talosctl bootstrap\n")
 	fmt.Printf("  talosctl health\n")
 	fmt.Printf("  talosctl kubeconfig ./kubeconfig && KUBECONFIG=./kubeconfig kubectl get nodes\n")
-
-	return nil
 }

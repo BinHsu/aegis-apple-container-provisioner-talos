@@ -389,5 +389,62 @@ implementation was unit-tested but unverified on live hardware until this sessio
 
 ---
 
+## 2026-06-26 — G6: stable hostname endpoint (busybox, host DNS) ✅ VERIFIED
+
+**Environment:** macOS Apple Silicon · `container` CLI 1.0.0 · busybox image.
+**Prereq:** `sudo container system dns create aegis` (installs `/etc/resolver/containerization.aegis`
+forwarding `*.aegis` to 127.0.0.1:2053 — one-time per boot; does NOT survive a macOS reboot).
+
+### G6a — host resolves `<name>.<domain>` ✅ VERIFIED (2026-06-26, busybox)
+
+- **Ran:** `container run --detach --name b1.aegis docker.io/library/busybox sleep 3600`
+- **Saw:** `ping b1.aegis` returned replies; `dig @127.0.0.1 -p 2053 b1.aegis` returned the
+  container's vmnet IP. The host resolver forwarded `*.aegis` to the container DNS forwarder
+  exactly as documented.
+- **Key finding (no --hostname flag):** `container run --help` (container 1.0.0) lists `--name`
+  and `--dns-domain` but NO `--hostname` flag. The `--name` alone drives both the container ID
+  and the DNS A-record registered with the host resolver. `--dns-domain` is inside-container
+  resolv.conf only and plays no role in host-side resolution.
+- **IP auto-update after restart verified:** `container stop b1.aegis` → `container start b1.aegis`;
+  the IP changed (DHCP) and `ping b1.aegis` resolved to the NEW IP with no manual intervention.
+  The container DNS forwarder tracks the new IP and updates the A-record automatically.
+- **Verdict:** host-to-container DNS via `--name <fqdn>` works. A cold-restart IP change does
+  NOT break hostname resolution — only clients that cached the old IP suffer, not ones that
+  re-resolve the FQDN.
+
+### G6b — full Talos cluster with FQDN control-plane endpoint survives cold restart ✅ HARDWARE-VERIFIED (2026-06-26)
+
+**Environment:** macOS Apple Silicon · `container` CLI 1.0.0 · Talos v1.13.3 · single control-plane · `-dns-domain aegis`
+
+- **Ran:** provisioned a cluster with FQDN control-plane endpoint `https://g6-controlplane-1.aegis:6443`; confirmed cluster health; seeded namespace `g6b-marker`; then `container stop` + `container start` the control-plane node; re-queried cluster state using the unchanged FQDN kubeconfig.
+
+- **Saw (cluster bring-up):** `talosctl health` all checks OK; `talosctl service etcd` STATE Running / HEALTH OK; `talosctl service kubelet` Running / HEALTH OK; `kubectl get nodes` → Ready, control-plane, v1.36.1, containerd://2.2.4.
+
+- **Saw (dotted container name → clean node name):** the container is named `g6-controlplane-1.aegis`, but the Kubernetes node name is `g6-controlplane-1` — Talos drops the domain suffix. The earlier concern about a dotted Kubernetes node name does not apply. No `--hostname` flag is needed (container 1.0.0 has none anyway).
+
+- **Saw (cold-restart, zero re-point):** the DHCP IP shifted `192.168.64.7 → 192.168.64.8`; `dig @127.0.0.1 -p 2053 g6-controlplane-1.aegis` returned the new IP `.8`; with the unchanged FQDN kubeconfig (`server: https://g6-controlplane-1.aegis:6443`) and no reconfiguration, `kubectl get nodes` returned the node Ready with `INTERNAL-IP` auto-updated to `.8`; the `g6b-marker` namespace survived (Active) — etcd data persisted via the v0.1.0 named volumes.
+
+- **Verdict:** a cold restart fully recovers on the `kubectl`/Kubernetes side with zero operator action. The FQDN endpoint mechanism (DNS auto-update + FQDN in cert SANs + named-volume state persistence) works end to end on real hardware.
+
+**Caveats (recorded honestly):**
+
+1. **`talosctl` node-targeting requires the current IP.** `talosctl -n g6-controlplane-1.aegis`
+   fails: `ParseAddr("...": unexpected character` — the `--nodes` flag requires an IP address, not
+   a hostname. You can use `--endpoints g6-controlplane-1.aegis` for the dial address, but must pass
+   `-n <current-IP>` for node targeting after a cold restart. The `kubectl`/Kubernetes path is fully
+   hostname-clean; `talosctl` is not.
+
+2. **`sudo container system dns create <domain>` is required once per boot.** The `pf` redirect
+   rule that forwards `*.aegis` to `127.0.0.1:2053` does **not** survive a macOS reboot. The
+   `/etc/resolver/containerization.aegis` file persists but is inert until re-run. Re-run the
+   command after every macOS reboot before starting or reconnecting to a cluster.
+
+3. **Bootstrap timing.** Calling `talosctl bootstrap` immediately after provisioning can return
+   `bootstrap is not available yet` (etcd service still Preparing). Wait for the node to settle or
+   retry. This is operator guidance, not a provisioner bug — the provisioner intentionally hands
+   bootstrap to the operator.
+
+---
+
 Fill each first-person as the gate runs. Surprises and dead-ends are the most valuable
 entries — they are what a reviewer reads as a human having actually done the work.
