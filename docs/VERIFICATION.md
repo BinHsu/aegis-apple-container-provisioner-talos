@@ -273,56 +273,77 @@ observed. Empty-but-claimed verification is the exact failure this spike is buil
   ingress-nginx and the modern Gateway API. The WS0 ingress question is closed; a strong upstream story.
   **Finding for WS0:** its plan still says "ingress-nginx" — that's retired; use Gateway API (verified here).
 
-## 2026-06-26 — G5: cross-restart survival — persistent-volume recipe IMPLEMENTED, runtime UNVERIFIED ⚠️
-- **What changed (code, not a runtime observation):** the provider no longer tmpfs-mounts the two
-  state-bearing paths. `/var` (etcd data) and `/system/state` (machine config + PKI) are now
-  persistent host bind-mounts — `--volume <stateBase>/<cluster>/<node>/var:/var` and
-  `…/system-state:/system/state`, host dirs under the cluster's existing state directory
-  (`_out/clusters/<cluster>/<node>/…` by default; the same $HOME-friendly base Apple's container
-  virtio-fs sharing allows). `Create` mkdir's them and refuses to boot onto a non-empty (stale) `/var`
-  (telling the operator to `destroy` first); `Destroy` `os.RemoveAll`s them so a same-named recreate
-  starts clean. Recipe + tests are green (`go build/vet/test`, `gofmt`); the runtime claims below are
-  NOT yet observed.
-- **Why this is necessary-but-NOT-sufficient (read this before reading the commit as "restart works"):**
-  the cold-restart loss had **two coupled causes** — tmpfs (state in RAM, wiped) AND vmnet DHCP (IP
-  moves, no reservation). This change removes only the first. A restarted control-plane now keeps its
-  config + etcd data, but its IP still changes, so the apiserver/etcd serving certs (SANs pinned to the
-  old IP) go stale. **Restart survival is still expected to FAIL** on the cert mismatch (G5c). Do not
-  read this commit as "restart now works."
-- **UNVERIFIED sub-gates — each needs hands-on testing on real macOS 26 + Apple Silicon hardware:**
+## 2026-06-26 — G5: cross-restart survival — host-bind FAILED on hardware, switched to NAMED VOLUMES ⚠️
+- **VERIFIED FAIL — host-path bind-mount breaks Talos boot (run on real macOS 26 + Apple Silicon).**
+  The first cut bind-mounted host dirs for the two state-bearing paths
+  (`--volume <hostpath>:/var`, `--volume <hostpath>:/system/state`). On hardware the control-plane node
+  **never reached maintenance mode.** Apple's `--volume <hostpath>:<container>` is a **virtio-fs host
+  share**: the guest has no real ownership, so a `chmod` from inside the guest returns "operation not
+  permitted". Talos's `block.MountController` **unconditionally** chmods `/system/state`, so it loops
+  forever on:
+  ```
+  failed to chmod "/system/state": chmod /system/state: operation not permitted
+  ```
+  Consequence chain: the mount controller never settles → the maintenance API (`:50000`) **never opens**
+  → `apply-config` fails with **connection refused**. The host-bind approach is a dead end for any Talos
+  path that chmods its mounts — which `/system/state` always does.
+- **VERIFIED — Apple NAMED VOLUMES are block-backed, guest-owned, and chmod-able.** `container volume
+  create <name>` produces a block-backed ext4 volume owned by the guest root, so the in-guest chmod
+  SUCCEEDS. Isolated busybox A/B test (same image, two mounts) made the difference unambiguous:
+  ```sh
+  container volume create chmodtest
+  # named volume -> chmod OK
+  container run --rm --volume chmodtest:/mnt busybox sh -c 'chmod 0700 /mnt && echo NAMED_OK'
+  #   -> NAMED_OK
+  # host-path bind -> chmod FAILS
+  container run --rm --volume "$PWD/hostbind":/mnt busybox sh -c 'chmod 0700 /mnt || echo HOST_FAIL'
+  #   -> chmod: /mnt: Operation not permitted
+  #   -> HOST_FAIL
+  ```
+  So the fix is structural, not a flag tweak: state-bearing mounts MUST be named volumes.
+- **What changed (code).** The provider no longer tmpfs-mounts and no longer host-binds the two
+  state-bearing paths. `/var` (etcd data) and `/system/state` (machine config + PKI) are now per-cluster,
+  per-node **named volumes** — `--volume <cluster>-<node>-var:/var` and
+  `--volume <cluster>-<node>-system-state:/system/state` (names sanitized: lowercase, invalid chars →
+  `-`; single source of truth in `nodeVolumeNames`). `Create` creates each volume and refuses to boot if
+  one already EXISTS (stale state — tells the operator to `destroy` first); `Destroy` deletes them
+  (idempotent: "not found" treated as success). Recipe + tests are green (`go build/vet/test`, `gofmt`);
+  the runtime claims below are NOT yet observed.
+- **Why this is necessary-but-NOT-sufficient (do not read this as "restart works").** The cold-restart
+  loss had **two coupled causes** — tmpfs (state in RAM, wiped) AND vmnet DHCP (IP moves, no
+  reservation). Named volumes remove the first. A restarted control-plane now keeps its config + etcd
+  data, but its IP still changes, so the apiserver/etcd serving certs (SANs pinned to the old IP) go
+  stale. **Restart survival is still expected to FAIL** on the cert mismatch (G5c).
+- **STILL UNVERIFIED sub-gates — each needs hands-on testing on real macOS 26 + Apple Silicon:**
 
-  - **G5a — does etcd actually start on a virtio-fs-backed `/var`?** (highest risk: ownership / uid-gid /
-    permission mapping across the virtio-fs share). Likely failure mode: etcd refuses a data dir it does
-    not own, or the host-side dir is owned by the wrong uid.
+  - **G5a — does Talos actually boot to maintenance AND does etcd start on a NAMED-VOLUME-backed `/var`?**
+    The chmod wall is cleared (named volume is guest-owned), so the node should now reach maintenance;
+    the remaining open question is whether etcd comes up clean on the ext4 volume.
     ```sh
     aegis -name g5 -workers 0 && export TALOSCONFIG=_out/clusters/g5/talosconfig
+    container logs g5-controlplane-1 2>&1 | grep -iE 'chmod|operation not permitted'  # EXPECT: empty now
     talosctl bootstrap && talosctl health
-    talosctl -n <cp-ip> logs etcd 2>&1 | grep -iE 'permission|chown|uid|gid|data-dir'   # EXPECT: clean
-    ls -lan _out/clusters/g5/g5-controlplane-1/var/lib/etcd                              # who owns the host side?
-    ```
-  - **G5b — does `mount(MS_SHARED|MS_REC)` succeed on a virtio-fs bind-mount?** `setupSharedFilesystems`
-    sets shared propagation on `/var`; it worked on the tmpfs we replaced — virtio-fs may reject it
-    (the original tmpfs fix existed precisely because non-mountpoints returned EINVAL here).
-    ```sh
-    container logs g5-controlplane-1 2>&1 | grep -iE 'setupSharedFilesystems|MS_SHARED|invalid argument'  # EXPECT: empty
+    talosctl -n <cp-ip> logs etcd 2>&1 | grep -iE 'permission|chown|uid|gid|data-dir' # EXPECT: clean
     ```
   - **G5c — persistent state + IP change on cold restart: EXPECTED to still fail on cert SAN mismatch.**
-    State now survives; the moved IP does not. This documents the remaining coupled cause.
+    State now survives the restart; the moved IP does not. Documents the remaining coupled cause.
     ```sh
     container stop g5-controlplane-1 && container start g5-controlplane-1
     NEW=$(container inspect g5-controlplane-1 | jq -r '.[0].status.networks[0].ipv4Address' | cut -d/ -f1)
-    talosctl -n "$NEW" get machineconfig   # EXPECT: returns config now (state persisted) — the win
+    talosctl -n "$NEW" get machineconfig   # EXPECT: returns config now (state persisted on the volume) — the win
     talosctl -n "$NEW" health              # EXPECT: still FAILS — x509 cert SAN does not cover $NEW
     ```
-  - **G5d — fsync durability / performance of etcd on virtio-fs vs the old tmpfs.** tmpfs fsync is a
-    no-op (RAM); virtio-fs round-trips to the host FS, so etcd's `wal_fsync` latency and durability
-    semantics change — measure before trusting it for anything but ephemeral dev.
-    ```sh
-    talosctl -n <cp-ip> etcd status                                 # leader/db-size sane?
-    # etcd wal_fsync_duration_seconds (p99) on virtio-fs vs a tmpfs control run — compare, expect higher.
-    ```
-- **Verdict:** recipe IMPLEMENTED and unit-locked; **all four runtime sub-gates UNVERIFIED.** This is a
-  SPIKE repo — runtime behavior cannot be confirmed here. The next hands-on session runs G5a–G5d on real
+- **Known gap — `aegis -destroy` cannot clean a FAILED create.** Destroy reflects recorded state
+  (`Reflect` / `state.yaml`), so it can only tear down a cluster whose Create reached `saveState`. When a
+  Create FAILED before that (observed: a stuck container left behind), there is no `state.yaml` for
+  Destroy to act on and the leftover container had to be removed by hand. The fix is a **label-based
+  sweep**: every node already carries `--label talos.owned=true` (+ `talos.cluster.name`), so Destroy
+  should also list-and-remove containers/volumes by that label to clean half-created clusters. Tracked,
+  not yet implemented.
+- **Verdict:** host-bind approach VERIFIED-FAILED and abandoned; named-volume recipe IMPLEMENTED and
+  unit-locked; the chmod wall is proven cleared by the busybox A/B test, but the full Talos boot
+  (G5a) and cross-restart behavior (G5c) remain UNVERIFIED. This is a SPIKE repo — runtime behavior
+  beyond the busybox primitive cannot be confirmed here. The next hands-on session runs G5a/G5c on real
   hardware and records the observations as their own first-person entries.
 
 ---

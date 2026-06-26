@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/netip"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/siderolabs/talos/pkg/machinery/constants"
@@ -21,24 +22,37 @@ import (
 //
 // Derivation from the docker provider's mount set, with the apple/container deltas the
 // G1-G4 spike established (see docs/runbook.md G2/G4):
+//
 //   - docker tmpfs-es /run,/system,/tmp and mounts /var, /system/state, and constants.Overlays
 //     as named *volumes*. apple/container has no docker-style named volumes, so the ephemeral
 //     ones become a --tmpfs. That is fine: they are runtime dirs Talos repopulates, and making
 //     them real mount points is exactly what Talos's setupSharedFilesystems (MS_SHARED|MS_REC on
 //     /,/var,/etc/cni,/run) requires — without them the boot sequence fails with EINVAL (G2/G4).
+//
 //   - /opt is EXCLUDED. A fresh docker *volume* copies up the image's content, so docker's /opt
 //     volume keeps the shipped /opt/cni/bin (loopback, flannel). --tmpfs does NOT copy up — it is
 //     always empty — so tmpfs-ing /opt shadows the CNI plugins and pod sandbox creation fails
 //     ("failed to find plugin flannel/loopback in /opt/cni/bin"), leaving coredns stuck (G4).
 //     apple/container's rootfs is writable, so leaving /opt unmounted preserves the binaries and
 //     still lets flannel's install-cni write into /opt/cni/bin.
+//
 //   - /var (constants.EphemeralMountPoint) and /system/state (constants.StateMountPoint) are NO
 //     LONGER tmpfs. They are the only two mounts carrying state that must survive a container cold
 //     restart (machine config + PKI live in /system/state; etcd data lives in /var), so they are
-//     now persistent host bind-mounts via nodeVolumePaths / buildRunArgs (--volume). Keeping them
-//     on RAM-backed tmpfs is what wiped a single-control-plane cluster on a daemon restart (the G5
-//     cross-restart gap). NB: this is necessary but not sufficient for restart survival — the
-//     vmnet DHCP IP still moves on restart, so API-server/etcd cert SANs go stale (see G5c).
+//     now persistent Apple `container` NAMED VOLUMES via nodeVolumeNames / buildRunArgs (--volume).
+//     Keeping them on RAM-backed tmpfs is what wiped a single-control-plane cluster on a daemon
+//     restart (the G5 cross-restart gap). NB: this is necessary but not sufficient for restart
+//     survival — the vmnet DHCP IP still moves on restart, so API-server/etcd cert SANs go stale
+//     (see G5c).
+//
+//     Why NAMED VOLUMES and not host-path bind-mounts (verified on hardware): Apple's
+//     `--volume <hostpath>:<container>` is a virtio-fs host share. The guest has no real ownership
+//     of that share, so a `chmod` from inside the guest returns "operation not permitted". Talos's
+//     block.MountController unconditionally chmods /system/state, so a host-bind /system/state loops
+//     forever ("failed to chmod \"/system/state\": chmod /system/state: operation not permitted"),
+//     the maintenance API (:50000) never opens, and apply-config fails with connection refused.
+//     Apple named volumes (`container volume create`) are block-backed ext4 owned by the guest root,
+//     so the guest chmod SUCCEEDS. See docs/VERIFICATION.md G5.
 func nodeTmpfsPaths() []string {
 	paths := []string{"/run", "/system", "/tmp"}
 
@@ -61,22 +75,41 @@ func clusterStatePath(clusterReq provision.ClusterRequest) string {
 	return filepath.Join(clusterReq.StateDirectory, clusterReq.Name)
 }
 
-// nodeVolumePaths returns the two host directories bind-mounted into a node for the state-bearing
-// in-VM paths: /var (etcd data) and /system/state (machine config + PKI). They live under the
-// cluster's own state directory, so they share the same $HOME-friendly base the provisioner
-// already uses for state.yaml — the location Apple's container virtio-fs sharing allows.
+// nodeVolumeNames returns the two Apple `container` NAMED VOLUME names backing a node's state-bearing
+// in-VM paths: /var (etcd data) and /system/state (machine config + PKI). Named volumes are
+// block-backed ext4 owned by the guest root, so Talos's block.MountController can chmod them — the
+// host-path bind-mount that virtio-fs rejects could not (see node.go header and docs/VERIFICATION.md G5).
 //
-// Scheme: <statePath>/<nodeName>/var and <statePath>/<nodeName>/system-state, i.e.
-// <StateDirectory>/<clusterName>/<nodeName>/{var,system-state}. The host dir uses "system-state"
-// (a path component cannot contain the in-VM "/system/state").
+// Scheme: <cluster>-<node>-var and <cluster>-<node>-system-state, sanitized to a valid volume name
+// (lowercase; any char outside [a-z0-9-] replaced with '-'). The suffix is "system-state" because a
+// volume name cannot contain the in-VM "/system/state".
 //
-// This is the single source of truth: createNode (mount), Create (mkdir + stale-state guard), and
-// Destroy (cleanup) all derive paths here, so the destroy path can never target a different — or
-// empty — directory than the one create populated.
-func nodeVolumePaths(statePath, nodeName string) (varDir, systemStateDir string) {
-	base := filepath.Join(statePath, nodeName)
+// This is the single source of truth: buildRunArgs (mount), Create (existence guard + create), and
+// Destroy (delete) all derive names here, so the destroy path can never target a different volume
+// than the one create provisioned.
+func nodeVolumeNames(clusterName, nodeName string) (varVol, systemStateVol string) {
+	base := clusterName + "-" + nodeName
 
-	return filepath.Join(base, "var"), filepath.Join(base, "system-state")
+	return sanitizeVolumeName(base + "-var"), sanitizeVolumeName(base + "-system-state")
+}
+
+// sanitizeVolumeName lowercases s and replaces every character outside [a-z0-9-] with '-', yielding a
+// stable, valid Apple `container` volume name from an arbitrary cluster/node identifier.
+func sanitizeVolumeName(s string) string {
+	var b strings.Builder
+
+	b.Grow(len(s))
+
+	for _, r := range strings.ToLower(s) {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '-':
+			b.WriteRune(r)
+		default:
+			b.WriteRune('-')
+		}
+	}
+
+	return b.String()
 }
 
 // buildRunArgs assembles the `container run` argument vector for one node from the verified
@@ -106,14 +139,17 @@ func buildRunArgs(clusterReq provision.ClusterRequest, nodeReq provision.NodeReq
 		args = append(args, "--tmpfs", path)
 	}
 
-	// Persistent state. /var (etcd) and /system/state (machine config + PKI) are bind-mounted from
-	// per-cluster, per-node host directories so cluster state survives a container cold restart —
-	// they used to be tmpfs (RAM), which wiped the cluster on a daemon/host restart (G5). The host
-	// dirs are created (and stale-state-guarded) in Create before launch; Destroy removes them.
-	varDir, systemStateDir := nodeVolumePaths(clusterStatePath(clusterReq), nodeReq.Name)
+	// Persistent state. /var (etcd) and /system/state (machine config + PKI) are backed by per-cluster,
+	// per-node Apple `container` NAMED VOLUMES so cluster state survives a container cold restart — they
+	// used to be tmpfs (RAM), which wiped the cluster on a daemon/host restart (G5). Named volumes (not
+	// host-path bind-mounts) are mandatory: a host-bind /system/state is a virtio-fs share the guest
+	// cannot chmod, so Talos's block.MountController loops on "chmod: operation not permitted" and the
+	// node never reaches maintenance mode. The volumes are created (and stale-state-guarded) in Create
+	// before launch; Destroy deletes them.
+	varVol, systemStateVol := nodeVolumeNames(clusterReq.Name, nodeReq.Name)
 	args = append(args,
-		"--volume", varDir+":"+constants.EphemeralMountPoint,
-		"--volume", systemStateDir+":"+constants.StateMountPoint,
+		"--volume", varVol+":"+constants.EphemeralMountPoint,
+		"--volume", systemStateVol+":"+constants.StateMountPoint,
 	)
 
 	// Labels mirror the docker provider (debugging + future Reflect); node IDs are also tracked

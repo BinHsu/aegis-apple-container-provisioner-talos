@@ -8,7 +8,6 @@ import (
 	"context"
 	"fmt"
 	"net"
-	"os"
 	"slices"
 	"strconv"
 
@@ -54,9 +53,9 @@ func (p *provisioner) Create(ctx context.Context, request provision.ClusterReque
 	// the cluster endpoint), then workers.
 	orderedReqs := slices.Concat(request.Nodes.ControlPlaneNodes(), request.Nodes.WorkerNodes())
 
-	// Persistent-state volumes: create each node's /var and /system/state host dirs before launch,
+	// Persistent-state volumes: create each node's /var and /system/state named volumes before launch,
 	// and refuse to boot onto stale state from a prior run (see prepareNodeVolumes).
-	if err = prepareNodeVolumes(statePath, orderedReqs); err != nil {
+	if err = prepareNodeVolumes(ctx, request.Name, orderedReqs, p.volumeExists, p.volumeCreate); err != nil {
 		return nil, err
 	}
 
@@ -118,53 +117,49 @@ func validateClusterRequest(request provision.ClusterRequest) error {
 	return nil
 }
 
-// prepareNodeVolumes creates the host bind-mount directories for each node's persistent /var and
-// /system/state, and guards against booting onto stale state.
+// prepareNodeVolumes creates each node's persistent /var and /system/state named volumes, and guards
+// against booting onto stale state.
 //
-// The guard is the load-bearing side effect of moving from tmpfs to persistent volumes: a /var dir
-// left non-empty by a prior run carries old etcd data, and a non-empty /system/state carries an old
-// machine config + PKI. Reusing either silently would boot a node into a stale, half-broken cluster
-// (wrong certs, divergent etcd) rather than a clean one. We refuse and tell the operator to destroy
-// first — never silently reuse (surprise data loss / stale boot) and never silently wipe.
-func prepareNodeVolumes(statePath string, reqs []provision.NodeRequest) error {
+// The guard is the load-bearing side effect of moving from tmpfs to persistent volumes: a /var volume
+// left behind by a prior run carries old etcd data, and a stale /system/state carries an old machine
+// config + PKI. Reusing either silently would boot a node into a stale, half-broken cluster (wrong
+// certs, divergent etcd) rather than a clean one. So for each volume we refuse if it already EXISTS
+// (telling the operator to destroy this cluster first) and otherwise create it fresh — never silently
+// reuse a stale volume, never silently wipe one.
+//
+// exists/create are injected (p.volumeExists / p.volumeCreate in production) so the guard is unit-testable
+// without the `container` CLI.
+func prepareNodeVolumes(
+	ctx context.Context,
+	clusterName string,
+	reqs []provision.NodeRequest,
+	exists func(context.Context, string) (bool, error),
+	create func(context.Context, string) error,
+) error {
 	for _, req := range reqs {
-		varDir, systemStateDir := nodeVolumePaths(statePath, req.Name)
+		varVol, systemStateVol := nodeVolumeNames(clusterName, req.Name)
 
-		for _, dir := range []string{varDir, systemStateDir} {
-			empty, err := dirIsEmpty(dir)
+		for _, vol := range []string{varVol, systemStateVol} {
+			present, err := exists(ctx, vol)
 			if err != nil {
-				return fmt.Errorf("checking volume dir %q for node %q: %w", dir, req.Name, err)
+				return fmt.Errorf("checking volume %q for node %q: %w", vol, req.Name, err)
 			}
 
-			if !empty {
+			if present {
 				return fmt.Errorf(
-					"node %q: volume dir %q already exists and is not empty (stale state from a prior run); "+
-						"run destroy for this cluster first — refusing to reuse or wipe it",
-					req.Name, dir,
+					"node %q: named volume %q already exists (stale state from a prior run); "+
+						"run destroy for this cluster first — refusing to reuse it",
+					req.Name, vol,
 				)
 			}
 
-			if err := os.MkdirAll(dir, 0o755); err != nil {
-				return fmt.Errorf("creating volume dir %q for node %q: %w", dir, req.Name, err)
+			if err := create(ctx, vol); err != nil {
+				return fmt.Errorf("creating volume %q for node %q: %w", vol, req.Name, err)
 			}
 		}
 	}
 
 	return nil
-}
-
-// dirIsEmpty reports whether dir is empty. A not-yet-existing dir counts as empty (nothing stale).
-func dirIsEmpty(dir string) (bool, error) {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return true, nil
-		}
-
-		return false, err
-	}
-
-	return len(entries) == 0, nil
 }
 
 // assertDistinctIPs fails if any two nodes share an IP (an everyday-correctness regression guard).

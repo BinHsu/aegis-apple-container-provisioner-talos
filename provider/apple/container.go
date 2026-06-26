@@ -96,3 +96,37 @@ func (p *provisioner) remove(ctx context.Context, id string) error {
 
 	return err
 }
+
+// volumeCreate creates a named volume (`container volume create <name>`). Apple named volumes are
+// block-backed ext4 owned by the guest root, so Talos can chmod the mount — the host-path bind-mount
+// they replace is a virtio-fs share the guest cannot chmod (see node.go / docs/VERIFICATION.md G5).
+func (p *provisioner) volumeCreate(ctx context.Context, name string) error {
+	_, err := p.run(ctx, "volume", "create", name)
+
+	return err
+}
+
+// volumeExists reports whether a named volume exists, via `container volume inspect <name>`:
+// success means it exists, a "not found" error means it does not. Any other error propagates.
+func (p *provisioner) volumeExists(ctx context.Context, name string) (bool, error) {
+	_, err := p.run(ctx, "volume", "inspect", name)
+	if err == nil {
+		return true, nil
+	}
+
+	if strings.Contains(err.Error(), "not found") {
+		return false, nil
+	}
+
+	return false, err
+}
+
+// volumeDelete deletes a named volume, ignoring "not found" so teardown is idempotent (mirrors remove).
+func (p *provisioner) volumeDelete(ctx context.Context, name string) error {
+	_, err := p.run(ctx, "volume", "delete", name)
+	if err != nil && strings.Contains(err.Error(), "not found") {
+		return nil
+	}
+
+	return err
+}
