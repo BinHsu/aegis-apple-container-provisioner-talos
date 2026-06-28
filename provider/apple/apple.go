@@ -100,28 +100,26 @@ func (p *provisioner) GenOptions(_ provision.NetworkRequest, contract *config.Ve
 	return genOptions, nil
 }
 
-// GetInClusterKubernetesControlPlaneEndpoint returns the in-cluster Kubernetes API endpoint.
-//
-// TODO(G5): apple/container assigns node IPs via vmnet DHCP (no static --ip; verified G3),
-// so the control-plane IP is NOT predictable from the CIDR the way docker's .Next().Next()
-// assumes. Create() must discover the control-plane node IP after launch and this endpoint
-// must be derived from it. The CIDR-based value below is a placeholder to keep the build green.
+// GetInClusterKubernetesControlPlaneEndpoint returns the CIDR-derived endpoint used as a
+// generation-time seed for the machine-config bundle. vmnet DHCP assigns the real IP after
+// node launch (no static-IP option; verified G3): Create() reads it from container inspect,
+// then overwrites this endpoint in every node's config via reconcileConfigs / patchConfig.
 func (p *provisioner) GetInClusterKubernetesControlPlaneEndpoint(networkReq provision.NetworkRequest, controlPlanePort int) string {
 	return "https://" + nethelpers.JoinHostPort(networkReq.CIDRs[0].Addr().Next().Next().String(), controlPlanePort)
 }
 
 // GetExternalKubernetesControlPlaneEndpoint returns the externally reachable Kubernetes API
-// endpoint. Unlike docker, apple/container needs no localhost port mapping — the vmnet node IP
-// is reachable from the host directly (verified G4).
-//
-// TODO(G5): same DHCP caveat as the in-cluster endpoint — derive from the discovered CP IP.
+// endpoint. Unlike the docker provider, apple/container needs no host port-mapping: vmnet
+// node IPs are directly reachable from the host (verified G4). This delegates to the
+// in-cluster endpoint; Create() overwrites the real value in every node's config via reconcileConfigs.
 func (p *provisioner) GetExternalKubernetesControlPlaneEndpoint(networkReq provision.NetworkRequest, controlPlanePort int) string {
 	return p.GetInClusterKubernetesControlPlaneEndpoint(networkReq, controlPlanePort)
 }
 
-// GetTalosAPIEndpoints returns the Talos API (apid) endpoints, reachable on the vmnet node IPs.
-//
-// TODO(G5): derive from discovered node IPs (DHCP). Placeholder uses the first CIDR address.
+// GetTalosAPIEndpoints returns the Talos API (apid) endpoints seeded into the talosconfig
+// bundle at generation time. The CIDR-derived value is provisional: after Create() runs,
+// reconcileConfigs applies the real machine configs and the driver prints the actual
+// DHCP-assigned node IPs for the operator to supply to talosctl config endpoint / node.
 func (p *provisioner) GetTalosAPIEndpoints(networkReq provision.NetworkRequest) []string {
 	return []string{networkReq.CIDRs[0].Addr().Next().Next().String()}
 }
