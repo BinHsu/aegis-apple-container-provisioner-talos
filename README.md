@@ -20,6 +20,131 @@ go build -o _out/aegis ./cmd/aegis
 
 The driver prints provisioned IPs and the exact operator steps: `export TALOSCONFIG`, then `talosctl bootstrap`, `talosctl health`, and `talosctl kubeconfig`. The upstream integration path — `talosctl cluster create apple-container`, no separate binary — is [Path A](docs/runbook.md) in the runbook.
 
+
+## Architecture
+
+```
+
+┌─────────────────────────────────────────────────────────────────────┐
+│                   macOS 26+  ·  Apple Silicon host                  │
+│                                                                     │
+│  ┌───────────────────────────────────────────────────────────────┐  │
+│  │       apple/container runtime  (vmnet · per-VM DHCP)          │  │
+│  │                                                               │  │
+│  │  Stable endpoint: talos-cluster.local                         │  │
+│  │    └── container system dns · FQDN survives DHCP IP churn     │  │
+│  │                                                               │  │
+│  │  ┌─────── Control Plane · embedded etcd quorum ─────────────┐ │  │
+│  │  │                                                          │ │  │
+│  │  │  ┌─────────────┐ ┌─────────────┐ ┌─────────────┐         │ │  │
+│  │  │  │  talos-cp-1 │ │  talos-cp-2 │ │  talos-cp-3 │         │ │  │
+│  │  │  │ 192.168.x.a │ │ 192.168.x.b │ │ 192.168.x.c │         │ │  │
+│  │  │  │   micro-VM  │ │   micro-VM  │ │   micro-VM  │         │ │  │
+│  │  │  │ ┌─────────┐ │ │ ┌─────────┐ │ │ ┌─────────┐ │         │ │  │
+│  │  │  │ │  etcd   │◄┼─┼►│  etcd   │◄┼─┼►│  etcd   │ │         │ │  │
+│  │  │  │ │  raft   │ │ │ │  raft   │ │ │ │  raft   │ │         │ │  │
+│  │  │  │ └─────────┘ │ │ └─────────┘ │ │ └─────────┘ │         │ │  │
+│  │  │  └─────────────┘ └─────────────┘ └─────────────┘         │ │  │
+│  │  └──────────────────────────────────────────────────────────┘ │  │
+│  │                                                               │  │
+│  │  ┌───────────────── Worker Nodes ───────────────────────────┐ │  │
+│  │  │                                                          │ │  │
+│  │  │  ┌─────────────┐  ┌─────────────┐       ┌─────────────┐  │ │  │
+│  │  │  │   worker-1  │  │   worker-2  │ . . . │   worker-N  │  │ │  │
+│  │  │  │ 192.168.x.d │  │ 192.168.x.e │       │     ...     │  │ │  │
+│  │  │  │   micro-VM  │  │   micro-VM  │       │   micro-VM  │  │ │  │
+│  │  │  └─────────────┘  └─────────────┘       └─────────────┘  │ │  │
+│  │  └──────────────────────────────────────────────────────────┘ │  │
+│  │                                                               │  │
+│  │  ◆ Named volumes (block-backed ext4)                          │  │
+│  │    Kubernetes state survives restart even as DHCP IP shifts   │  │
+│  │                                                               │  │
+│  │  ◆ MetalLB L2 VIP is host-reachable on apple/container        │  │
+│  │    Gratuitous ARP works on vmnet  (qemu path drops it)        │  │
+│  └───────────────────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────────────┘
+
+Key differentiators vs Docker Desktop / kind / k3d:
+  · Each node runs in its OWN micro-VM — no shared kernel
+  · vmnet gives each node its own DHCP-assigned IP
+  · Talos embedded etcd: no external datastore needed for HA
+  · L7 ingress: ingress-nginx + Gateway API verified
+```
+
+### Boot / reconcile flow
+
+`aegis` cannot pre-assign IPs: apple/container's vmnet allocates them via DHCP at first
+boot. The six-step loop below — boot bare, inspect, patch config, apply, bootstrap,
+export kubeconfig — is the adaptation that makes Talos work on this substrate.
+
+```
+
+  operator: talosctl cluster create  (aegis driver)
+                                                              │
+  │  ── for each node (control-plane and workers) ──────────────────
+                                                              │
+  ▼
+  ┌───────────────────────────────────────────────────────────┐
+  │  [1]  BOOT BARE                                           │
+  │       apple/container run <talos-iso-image> <node-name>   │
+  │       vmnet assigns DHCP IP — unknown at launch time      │
+  │       Talos minimal OS starts; no SSH, no pre-config      │
+  └───────────────────────────────────────────────────────────┘
+                                                              │
+  ▼
+  ┌───────────────────────────────────────────────────────────┐
+  │  [2]  DISCOVER IP                                         │
+  │       container inspect <node-name>                       │
+  │       → parse NetworkSettings.IPAddress                   │
+  │       → actual IP: e.g.  192.168.x.a  (cp-1)              │
+  │                           192.168.x.b  (cp-2)             │
+  │                           192.168.x.c  (cp-3)             │
+  └───────────────────────────────────────────────────────────┘
+                                                              │
+  ▼
+  ┌───────────────────────────────────────────────────────────┐
+  │  [3]  PATCH CONFIG                                        │
+  │       reconcileConfigs() / patchConfig()                  │
+  │       → inject discovered IP as control-plane endpoint    │
+  │         into each node's Talos machine config             │
+  │       → stable endpoint also set via -dns-domain          │
+  │         (container system dns resolves FQDN → current IP) │
+  └───────────────────────────────────────────────────────────┘
+                                                              │
+  ▼
+  ┌───────────────────────────────────────────────────────────┐
+  │  [4]  APPLY CONFIG                                        │
+  │       talosctl apply-config --insecure \                  │
+  │         --nodes <discovered-IP>                           │
+  │       → push patched machine config to node               │
+  │       Talos reboots into configured state                 │
+  └───────────────────────────────────────────────────────────┘
+                                                              │
+  │  (control-plane node 1 only, once all CPs are configured)
+  ▼
+  ┌───────────────────────────────────────────────────────────┐
+  │  [5]  BOOTSTRAP                                           │
+  │       talosctl bootstrap                                  │
+  │       → initialises etcd quorum on first CP node          │
+  │       talosctl health  →  await cluster ready             │
+  └───────────────────────────────────────────────────────────┘
+                                                              │
+  ▼
+  ┌───────────────────────────────────────────────────────────┐
+  │  [6]  EXPORT KUBECONFIG                                   │
+  │       talosctl kubeconfig                                 │
+  │       → kubectl context ready; cluster operational        │
+  └───────────────────────────────────────────────────────────┘
+
+Why this matters:
+  Standard provisioners assume static or pre-known IPs.
+  apple/container vmnet hands out DHCP IPs that change on
+  restart.  The boot-bare → inspect → patch → apply loop is
+  the adaptation that makes Talos work on this substrate.
+  Named volumes carry the etcd data; the FQDN endpoint via
+  container system dns absorbs the IP churn on each restart.
+```
+
 ## Why
 
 Production Kubernetes shed the Docker daemon years ago — `dockershim` is gone, the runtime underneath is containerd or CRI-O, and Talos itself ships no Docker. But the local dev loop never followed: `kind`, `minikube`, and Talos's own `docker` provisioner all still ride a Docker daemon behind Docker Desktop or OrbStack.
