@@ -4,6 +4,22 @@ A `talosctl` provisioner that runs local Talos Linux clusters on Apple's [`conta
 
 > **Status: a proven spike, not maintained tooling.** It answers one question — *can `talosctl cluster create` run a real Talos cluster on macOS with no Docker API?* — and the answer is yes, verified end to end (see [`docs/runbook.md`](docs/runbook.md) and [`docs/VERIFICATION.md`](docs/VERIFICATION.md)). It was pitched upstream and **declined on principled grounds** — see [siderolabs/talos#13587](https://github.com/siderolabs/talos/discussions/13587). It stays here as a standalone dev/CI substrate. The conclusions live in a blog post; the code is the receipts. Do not build production on it.
 
+## Quickstart
+
+**Prerequisites:** macOS 26+, Apple Silicon, [`container`](https://github.com/apple/container) >= 1.0.0, `talosctl`, Go 1.26.4+.
+
+```sh
+# One-time per boot (default -dns-domain "aegis" uses FQDN naming; skip with -dns-domain ""):
+sudo container system dns create aegis
+
+go build -o _out/aegis ./cmd/aegis
+./_out/aegis -name demo        # 1 control-plane (4 GiB) + 1 worker (2 GiB); prints next steps
+
+./_out/aegis -name demo -destroy   # tear down when done
+```
+
+The driver prints provisioned IPs and the exact operator steps: `export TALOSCONFIG`, then `talosctl bootstrap`, `talosctl health`, and `talosctl kubeconfig`. The upstream integration path — `talosctl cluster create apple-container`, no separate binary — is [Path A](docs/runbook.md) in the runbook.
+
 ## Why
 
 Production Kubernetes shed the Docker daemon years ago — `dockershim` is gone, the runtime underneath is containerd or CRI-O, and Talos itself ships no Docker. But the local dev loop never followed: `kind`, `minikube`, and Talos's own `docker` provisioner all still ride a Docker daemon behind Docker Desktop or OrbStack.
