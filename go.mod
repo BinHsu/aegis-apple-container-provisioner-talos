@@ -3,8 +3,8 @@ module github.com/BinHsu/aegis-apple-container-provisioner-talos
 go 1.26.10
 
 require (
-	github.com/siderolabs/talos v1.13.4
-	github.com/siderolabs/talos/pkg/machinery v1.13.4
+	github.com/siderolabs/talos v1.14.0-alpha.0.0.20260513110206-76080416beee
+	github.com/siderolabs/talos/pkg/machinery v1.14.0-alpha.0
 )
 
 require (
@@ -19,7 +19,7 @@ require (
 	github.com/cloudflare/circl v1.6.3 // indirect
 	github.com/containerd/go-cni v1.1.13 // indirect
 	github.com/containernetworking/cni v1.3.0 // indirect
-	github.com/cosi-project/runtime v1.14.1 // indirect
+	github.com/cosi-project/runtime v1.14.2 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/evanphx/json-patch v5.9.11+incompatible // indirect
 	github.com/gertd/go-pluralize v0.2.1 // indirect
@@ -31,11 +31,11 @@ require (
 	github.com/hashicorp/errwrap v1.1.0 // indirect
 	github.com/hashicorp/go-multierror v1.1.1 // indirect
 	github.com/jsimonetti/rtnetlink/v2 v2.2.1-0.20260317095713-310581b9c6ac // indirect
-	github.com/mdlayher/ethtool v0.5.1 // indirect
-	github.com/mdlayher/genetlink v1.3.2 // indirect
-	github.com/mdlayher/netlink v1.9.0 // indirect
-	github.com/mdlayher/socket v0.5.1 // indirect
-	github.com/moby/moby/api v1.54.1 // indirect
+	github.com/mdlayher/ethtool v0.6.0 // indirect
+	github.com/mdlayher/genetlink v1.4.0 // indirect
+	github.com/mdlayher/netlink v1.11.1 // indirect
+	github.com/mdlayher/socket v0.6.0 // indirect
+	github.com/moby/moby/api v1.54.2 // indirect
 	github.com/onsi/ginkgo/v2 v2.25.1 // indirect
 	github.com/onsi/gomega v1.38.1 // indirect
 	github.com/opencontainers/runtime-spec v1.3.0 // indirect
@@ -54,7 +54,7 @@ require (
 	github.com/siderolabs/protoenc v0.2.4 // indirect
 	github.com/stretchr/objx v0.5.2 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
-	go.uber.org/zap v1.27.1 // indirect
+	go.uber.org/zap v1.28.0 // indirect
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
 	go.yaml.in/yaml/v4 v4.0.0-rc.4 // indirect
 	golang.org/x/crypto v0.58.0 // indirect
